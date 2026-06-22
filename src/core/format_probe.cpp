@@ -32,8 +32,8 @@ ImageFormat probe_format(std::span<const std::byte> bytes) noexcept {
       std::byte{0x0A},
   };
   constexpr std::array bmp_signature{
-      std::byte{'B'},
-      std::byte{'M'},
+      std::byte{0x42},
+      std::byte{0x4D},
   };
 
   if (begins_with(bytes, jpeg_signature)) {
