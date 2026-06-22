@@ -1,6 +1,6 @@
 .superpowers/
+.worktrees/
 build/
 out/
 .vs/
 CMakeUserPresets.json
-
