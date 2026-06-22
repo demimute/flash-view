@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -17,32 +18,34 @@ constexpr std::size_t operator""_MiB(unsigned long long value) {
 }
 
 struct ImageFrame {
-  std::size_t width = 0;
-  std::size_t height = 0;
-  std::size_t stride = 0;
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t stride = 0;
   std::vector<std::byte> pixels;
 
-  static Result<ImageFrame> allocate_bgra8(std::size_t width,
-                                           std::size_t height,
-                                           std::size_t budget) {
-    constexpr std::size_t bytes_per_pixel = 4;
+  static Result<ImageFrame> allocate_bgra8(std::uint32_t width,
+                                           std::uint32_t height,
+                                           std::size_t byte_budget) {
+    constexpr std::uint32_t bytes_per_pixel = 4;
 
     if (width == 0 || height == 0) {
       return Result<ImageFrame>::failure(
           {ErrorCode::invalid_format, L"Image dimensions must be non-zero."});
     }
 
-    if (width > std::numeric_limits<std::size_t>::max() / bytes_per_pixel) {
-      return resource_limit(L"Image row stride exceeds addressable memory.");
+    if (width >
+        std::numeric_limits<std::uint32_t>::max() / bytes_per_pixel) {
+      return resource_limit(L"Image row stride exceeds the uint32 limit.");
     }
-    const std::size_t stride = width * bytes_per_pixel;
+    const std::uint32_t stride = width * bytes_per_pixel;
 
-    if (height > std::numeric_limits<std::size_t>::max() / stride) {
-      return resource_limit(L"Image pixel storage exceeds addressable memory.");
+    const std::uint64_t pixel_bytes =
+        static_cast<std::uint64_t>(stride) * height;
+
+    if (pixel_bytes > std::numeric_limits<std::uint32_t>::max()) {
+      return resource_limit(L"Image pixel storage exceeds the uint32 limit.");
     }
-    const std::size_t pixel_bytes = stride * height;
-
-    if (pixel_bytes > budget) {
+    if (pixel_bytes > byte_budget) {
       return resource_limit(L"Image pixel storage exceeds the memory budget.");
     }
 
@@ -52,7 +55,7 @@ struct ImageFrame {
         .stride = stride,
     };
     try {
-      frame.pixels.resize(pixel_bytes);
+      frame.pixels.resize(static_cast<std::size_t>(pixel_bytes));
     } catch (const std::bad_alloc&) {
       return resource_limit(L"Unable to allocate image pixel storage.");
     } catch (const std::length_error&) {
