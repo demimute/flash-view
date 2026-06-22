@@ -6,6 +6,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
 include(CTest)
 
+# Convert viewer_core to STATIC when the first implementation source is added.
 add_library(viewer_core INTERFACE)
 target_compile_features(viewer_core INTERFACE cxx_std_20)
 target_include_directories(viewer_core
