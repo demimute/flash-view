@@ -5,6 +5,7 @@ add_executable(viewer_tests
   core/format_probe_test.cpp
   core/image_types_test.cpp
   core/natural_sort_test.cpp
+  core/priority_executor_test.cpp
   core/smoke_test.cpp
 )
 
