@@ -123,9 +123,29 @@ TEST(DirectoryNavigatorTest, PreviousAndNextWrapFromUpdatedPosition) {
   EXPECT_EQ(navigator.current_index(), 0U);
 }
 
-TEST(DirectoryNavigatorTest, LocatesSelectedImageThroughSymlinkAlias) {
+TEST(DirectoryNavigatorTest, PrefersExactRealPathOverEquivalentAlias) {
   UniqueTempDirectory directory;
-  const auto image = directory.path() / "2.jpg";
+  const auto image = directory.path() / "2.png";
+  const auto alias = directory.path() / "10.jpg";
+  write_bytes(image, jpeg_magic);
+
+  std::error_code symlink_error;
+  std::filesystem::create_symlink(image.filename(), alias, symlink_error);
+  if (symlink_error) {
+    GTEST_SKIP() << "Could not create a file symlink: "
+                 << symlink_error.message();
+  }
+
+  const auto result = DirectoryNavigator::scan(image);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result.value().current_index(), 0U);
+  EXPECT_EQ(result.value().current().filename(), "2.png");
+}
+
+TEST(DirectoryNavigatorTest, PrefersExactAliasOverEquivalentRealPath) {
+  UniqueTempDirectory directory;
+  const auto image = directory.path() / "2.png";
   const auto alias = directory.path() / "10.jpg";
   write_bytes(image, jpeg_magic);
 
@@ -139,8 +159,8 @@ TEST(DirectoryNavigatorTest, LocatesSelectedImageThroughSymlinkAlias) {
   const auto result = DirectoryNavigator::scan(alias);
 
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result.value().current_index(), 0U);
-  EXPECT_EQ(result.value().current().filename(), "2.jpg");
+  EXPECT_EQ(result.value().current_index(), 1U);
+  EXPECT_EQ(result.value().current().filename(), "10.jpg");
 }
 
 TEST(DirectoryNavigatorTest, RejectsMissingSelectedPath) {
