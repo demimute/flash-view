@@ -1,6 +1,7 @@
 find_package(GTest CONFIG REQUIRED)
 
 add_executable(viewer_tests
+  core/directory_navigator_test.cpp
   core/format_probe_test.cpp
   core/image_types_test.cpp
   core/natural_sort_test.cpp

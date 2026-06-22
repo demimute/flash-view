@@ -7,6 +7,7 @@ include(CompilerWarnings)
 include(CTest)
 
 add_library(viewer_core STATIC
+  src/core/directory_navigator.cpp
   src/core/format_probe.cpp
   src/core/natural_sort.cpp
 )
