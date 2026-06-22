@@ -4,8 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
-#include <queue>
 #include <thread>
 #include <vector>
 
@@ -21,8 +21,13 @@ enum class Priority : std::uint8_t {
 
 class PriorityExecutor {
  public:
+  using ThreadFactory =
+      std::function<std::thread(std::function<void()>)>;
+
   explicit PriorityExecutor(std::size_t thread_count,
                             bool start_immediately = true);
+  PriorityExecutor(std::size_t thread_count, bool start_immediately,
+                   ThreadFactory thread_factory);
   ~PriorityExecutor();
 
   PriorityExecutor(const PriorityExecutor&) = delete;
@@ -31,7 +36,9 @@ class PriorityExecutor {
   PriorityExecutor& operator=(PriorityExecutor&&) = delete;
 
   // start() and stop() are idempotent. stop() rejects new submissions, drains
-  // all accepted tasks, and joins worker threads.
+  // all accepted tasks, and joins worker threads when called externally.
+  // A worker calling stop() only requests drain shutdown; a later external
+  // stop() or destruction completes the joins.
   void start();
   void stop();
 
@@ -42,31 +49,20 @@ class PriorityExecutor {
   [[nodiscard]] bool submit(Priority priority, std::function<void()> task);
 
  private:
-  struct Task {
-    Priority priority;
-    std::uint64_t sequence;
-    std::function<void()> function;
-  };
+  struct State;
 
-  struct TaskCompare {
-    [[nodiscard]] bool operator()(const Task& lhs,
-                                  const Task& rhs) const noexcept;
-  };
-
-  void worker_loop();
+  static void worker_loop(const std::shared_ptr<State>& state);
   [[nodiscard]] bool called_from_worker() const noexcept;
+  void finish_destruction() noexcept;
 
   const std::size_t thread_count_;
+  ThreadFactory thread_factory_;
+  std::shared_ptr<State> state_;
   std::mutex lifecycle_mutex_;
-  mutable std::mutex mutex_;
-  std::condition_variable work_available_;
-  std::condition_variable idle_;
-  std::priority_queue<Task, std::vector<Task>, TaskCompare> tasks_;
+  std::condition_variable lifecycle_changed_;
   std::vector<std::thread> workers_;
-  std::uint64_t next_sequence_ = 0;
-  std::size_t active_tasks_ = 0;
-  bool started_ = false;
-  bool stopping_ = false;
+  bool join_in_progress_ = false;
+  bool joined_ = false;
 };
 
 }  // namespace viewer::core
