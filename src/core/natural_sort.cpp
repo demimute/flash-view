@@ -1,13 +1,19 @@
 #include "viewer/core/natural_sort.h"
 
 #include <cstddef>
-#include <cwctype>
 
 namespace viewer::core {
 namespace {
 
 [[nodiscard]] constexpr bool is_ascii_digit(wchar_t value) noexcept {
   return value >= L'0' && value <= L'9';
+}
+
+[[nodiscard]] constexpr wchar_t fold_ascii_case(wchar_t value) noexcept {
+  if (value >= L'A' && value <= L'Z') {
+    return static_cast<wchar_t>(value + (L'a' - L'A'));
+  }
+  return value;
 }
 
 [[nodiscard]] std::size_t digit_run_end(std::wstring_view value,
@@ -68,8 +74,8 @@ bool NaturalLess::operator()(std::wstring_view lhs,
       continue;
     }
 
-    const auto lhs_folded = std::towlower(lhs[lhs_index]);
-    const auto rhs_folded = std::towlower(rhs[rhs_index]);
+    const auto lhs_folded = fold_ascii_case(lhs[lhs_index]);
+    const auto rhs_folded = fold_ascii_case(rhs[rhs_index]);
     if (lhs_folded != rhs_folded) {
       return lhs_folded < rhs_folded;
     }
