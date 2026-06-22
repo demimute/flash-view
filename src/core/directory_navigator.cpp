@@ -127,11 +127,33 @@ Result<DirectoryNavigator> DirectoryNavigator::scan(
             });
 
   const auto selected_normalized = normalized(selected);
-  const auto current = std::find_if(
-      items.begin(), items.end(), [&selected_normalized](const auto& item) {
-        return normalized(item) == selected_normalized;
-      });
+  auto current = items.end();
+  bool comparison_failed = false;
+  for (auto candidate = items.begin(); candidate != items.end(); ++candidate) {
+    if (normalized(*candidate) == selected_normalized) {
+      current = candidate;
+      break;
+    }
+
+    std::error_code equivalent_error;
+    const bool is_selected =
+        std::filesystem::equivalent(*candidate, selected, equivalent_error);
+    if (equivalent_error) {
+      comparison_failed = true;
+      continue;
+    }
+    if (is_selected) {
+      current = candidate;
+      break;
+    }
+  }
+
   if (current == items.end()) {
+    if (comparison_failed) {
+      return Result<DirectoryNavigator>::failure(
+          io_error(L"Could not compare the selected image with directory "
+                   L"entries"));
+    }
     return Result<DirectoryNavigator>::failure(
         io_error(L"Selected image was not found in its directory"));
   }

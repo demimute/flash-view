@@ -123,6 +123,26 @@ TEST(DirectoryNavigatorTest, PreviousAndNextWrapFromUpdatedPosition) {
   EXPECT_EQ(navigator.current_index(), 0U);
 }
 
+TEST(DirectoryNavigatorTest, LocatesSelectedImageThroughSymlinkAlias) {
+  UniqueTempDirectory directory;
+  const auto image = directory.path() / "2.jpg";
+  const auto alias = directory.path() / "10.jpg";
+  write_bytes(image, jpeg_magic);
+
+  std::error_code symlink_error;
+  std::filesystem::create_symlink(image.filename(), alias, symlink_error);
+  if (symlink_error) {
+    GTEST_SKIP() << "Could not create a file symlink: "
+                 << symlink_error.message();
+  }
+
+  const auto result = DirectoryNavigator::scan(alias);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result.value().current_index(), 0U);
+  EXPECT_EQ(result.value().current().filename(), "2.jpg");
+}
+
 TEST(DirectoryNavigatorTest, RejectsMissingSelectedPath) {
   UniqueTempDirectory directory;
 
@@ -158,10 +178,17 @@ TEST(DirectoryNavigatorTest, ReportsIoErrorWhenDirectoryCannotBeRead) {
   write_bytes(selected, jpeg_magic);
   std::error_code permission_error;
   std::filesystem::permissions(
-      directory.path(), std::filesystem::perms::none,
+      directory.path(), std::filesystem::perms::owner_exec,
       std::filesystem::perm_options::replace, permission_error);
   if (permission_error) {
-    GTEST_SKIP() << "Could not make temporary directory unreadable";
+    GTEST_SKIP() << "Could not remove directory read permission";
+  }
+
+  std::error_code status_error;
+  const auto selected_status = std::filesystem::status(selected, status_error);
+  if (status_error || !std::filesystem::is_regular_file(selected_status)) {
+    GTEST_SKIP() << "Selected file cannot be inspected without directory read "
+                    "permission";
   }
 
   std::error_code iterator_error;
