@@ -1,6 +1,7 @@
 find_package(GTest CONFIG REQUIRED)
 
 add_executable(viewer_tests
+  core/format_probe_test.cpp
   core/image_types_test.cpp
   core/smoke_test.cpp
 )
