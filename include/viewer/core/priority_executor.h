@@ -11,7 +11,7 @@
 
 namespace viewer::core {
 
-enum class Priority {
+enum class Priority : std::uint8_t {
   current_image = 0,
   visible_thumbnail = 1,
   adjacent_image = 2,

@@ -5,6 +5,7 @@
 #include <future>
 #include <mutex>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "viewer/core/priority_executor.h"
@@ -14,6 +15,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
+static_assert(
+    std::is_same_v<std::underlying_type_t<Priority>, std::uint8_t>);
 static_assert(static_cast<int>(Priority::current_image) == 0);
 static_assert(static_cast<int>(Priority::visible_thumbnail) == 1);
 static_assert(static_cast<int>(Priority::adjacent_image) == 2);
