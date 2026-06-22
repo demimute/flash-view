@@ -19,6 +19,10 @@ enum class Priority : std::uint8_t {
   background = 4,
 };
 
+// PriorityExecutor must be owned and destroyed by a non-worker thread.
+// Destruction must be synchronized with all member calls and must not occur
+// concurrently with them. Destroying the executor from one of its own tasks is
+// unsupported.
 class PriorityExecutor {
  public:
   using ThreadFactory =
@@ -53,7 +57,6 @@ class PriorityExecutor {
 
   static void worker_loop(const std::shared_ptr<State>& state);
   [[nodiscard]] bool called_from_worker() const noexcept;
-  void finish_destruction() noexcept;
 
   const std::size_t thread_count_;
   ThreadFactory thread_factory_;

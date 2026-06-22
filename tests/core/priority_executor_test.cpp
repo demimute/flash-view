@@ -3,7 +3,6 @@
 #include <atomic>
 #include <chrono>
 #include <future>
-#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -81,10 +80,11 @@ TEST(PriorityExecutorTest, WaitIdleWaitsForAnActiveTask) {
   auto wait_result = std::async(std::launch::async, [&] {
     wait_entered.set_value();
     executor.wait_idle();
-    wait_returned = true;
+    wait_returned.store(true);
   });
   wait_entered.get_future().wait();
   EXPECT_FALSE(wait_returned.load());
+  EXPECT_EQ(wait_result.wait_for(0s), std::future_status::timeout);
 
   release_task.set_value();
   EXPECT_EQ(wait_result.wait_for(1s), std::future_status::ready);
@@ -110,13 +110,14 @@ TEST(PriorityExecutorTest, StopWaitsForActiveTaskAndDrainsAcceptedQueue) {
   auto stop_result = std::async(std::launch::async, [&] {
     stop_entered.set_value();
     executor.stop();
-    stop_returned = true;
+    stop_returned.store(true);
   });
   stop_entered.get_future().wait();
   while (executor.submit(Priority::background, [] {})) {
     std::this_thread::yield();
   }
   EXPECT_FALSE(stop_returned.load());
+  EXPECT_EQ(stop_result.wait_for(0s), std::future_status::timeout);
 
   release_first.set_value();
   EXPECT_EQ(stop_result.wait_for(1s), std::future_status::ready);
@@ -161,6 +162,7 @@ TEST(PriorityExecutorTest, DestructorWaitsForRunningTask) {
   started.wait();
   destructor_entered.get_future().wait();
   EXPECT_FALSE(destructor_returned.load());
+  EXPECT_EQ(lifetime.wait_for(0s), std::future_status::timeout);
   release_task.set_value();
   EXPECT_EQ(lifetime.wait_for(1s), std::future_status::ready);
 }
@@ -227,6 +229,8 @@ TEST(PriorityExecutorTest, ConcurrentStopsWaitForTheSameDrainAndJoin) {
     executor.stop();
   });
   second_stop_entered.get_future().wait();
+  EXPECT_EQ(first_stop.wait_for(0s), std::future_status::timeout);
+  EXPECT_EQ(second_stop.wait_for(0s), std::future_status::timeout);
 
   release_task.set_value();
   EXPECT_EQ(first_stop.wait_for(1s), std::future_status::ready);
@@ -252,59 +256,6 @@ TEST(PriorityExecutorTest, WorkerStopRequestsDrainAndExternalStopJoins) {
   executor.stop();
 
   EXPECT_EQ(results, (std::vector<int>{1, 2}));
-}
-
-TEST(PriorityExecutorTest, WorkerCanDestroyExecutorWithoutUseAfterFree) {
-  auto owner =
-      std::make_shared<std::unique_ptr<PriorityExecutor>>(
-          std::make_unique<PriorityExecutor>(1, false));
-  std::promise<void> allow_destroy;
-  auto allowed = allow_destroy.get_future().share();
-  std::promise<void> destroyed;
-
-  ASSERT_TRUE((*owner)->submit(Priority::current_image,
-                               [owner, allowed, &destroyed] {
-    allowed.wait();
-    owner->reset();
-    destroyed.set_value();
-  }));
-  (*owner)->start();
-  allow_destroy.set_value();
-
-  EXPECT_EQ(destroyed.get_future().wait_for(1s),
-            std::future_status::ready);
-}
-
-TEST(PriorityExecutorTest, WorkerDestructionDoesNotJoinOtherWorkers) {
-  auto owner =
-      std::make_shared<std::unique_ptr<PriorityExecutor>>(
-          std::make_unique<PriorityExecutor>(2, false));
-  std::promise<void> other_worker_started;
-  auto other_started = other_worker_started.get_future().share();
-  std::promise<void> release_other_worker;
-  auto release_other = release_other_worker.get_future().share();
-  std::promise<void> destruction_entered;
-  std::promise<void> destruction_returned;
-
-  ASSERT_TRUE((*owner)->submit(Priority::current_image, [owner, other_started,
-                                                         &destruction_entered,
-                                                         &destruction_returned] {
-    other_started.wait();
-    destruction_entered.set_value();
-    owner->reset();
-    destruction_returned.set_value();
-  }));
-  ASSERT_TRUE((*owner)->submit(Priority::background, [&] {
-    other_worker_started.set_value();
-    release_other.wait();
-  }));
-  (*owner)->start();
-
-  destruction_entered.get_future().wait();
-  auto returned = destruction_returned.get_future();
-  EXPECT_EQ(returned.wait_for(1s), std::future_status::ready);
-  release_other_worker.set_value();
-  EXPECT_EQ(returned.wait_for(1s), std::future_status::ready);
 }
 
 TEST(PriorityExecutorTest, StartFailureJoinsCreatedThreadsAndLeavesStopped) {

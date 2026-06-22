@@ -1,6 +1,7 @@
 #include "viewer/core/priority_executor.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <exception>
 #include <queue>
@@ -70,11 +71,11 @@ PriorityExecutor::PriorityExecutor(std::size_t thread_count,
 }
 
 PriorityExecutor::~PriorityExecutor() {
+  assert(!called_from_worker());
   try {
     stop();
   } catch (...) {
   }
-  finish_destruction();
 }
 
 void PriorityExecutor::start() {
@@ -299,36 +300,6 @@ void PriorityExecutor::worker_loop(
 bool PriorityExecutor::called_from_worker() const noexcept {
   std::lock_guard lock(state_->mutex);
   return state_->worker_ids.contains(std::this_thread::get_id());
-}
-
-void PriorityExecutor::finish_destruction() noexcept {
-  std::vector<std::thread> workers;
-  {
-    std::unique_lock lifecycle_lock(lifecycle_mutex_);
-    if (join_in_progress_) {
-      lifecycle_changed_.wait(lifecycle_lock,
-                              [this] { return joined_; });
-      return;
-    }
-    workers = std::move(workers_);
-  }
-
-  const auto caller = std::this_thread::get_id();
-  const bool caller_is_worker =
-      std::any_of(workers.begin(), workers.end(),
-                  [caller](const auto& worker) {
-                    return worker.get_id() == caller;
-                  });
-  for (auto& worker : workers) {
-    if (!worker.joinable()) {
-      continue;
-    }
-    if (caller_is_worker) {
-      worker.detach();
-    } else {
-      worker.join();
-    }
-  }
 }
 
 }  // namespace viewer::core
