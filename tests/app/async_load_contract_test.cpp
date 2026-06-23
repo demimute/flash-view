@@ -160,4 +160,34 @@ TEST(AsyncLoadContractTest, PointerPanningUsesPanTrackerHelper) {
   EXPECT_NE(source.find("ReleaseCapture()"), std::string::npos);
 }
 
+TEST(AsyncLoadContractTest, LoadResultsCarryMetricsAndPath) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("#include \"viewer/core/load_metrics.h\""),
+            std::string::npos);
+  EXPECT_NE(source.find("core::LoadMetrics metrics"), std::string::npos);
+  EXPECT_NE(source.find(".requested = core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+  EXPECT_NE(source.find("metrics.decode_started = "
+                        "core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+  EXPECT_NE(source.find("metrics.decode_finished = "
+                        "core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+  EXPECT_NE(source.find("loaded->metrics.presented = "
+                        "core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, DecodeFailuresShowPublicStatusAndLogDetails) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("This image could not be opened."), std::string::npos);
+  EXPECT_NE(source.find("renderer.set_status_text"), std::string::npos);
+  EXPECT_NE(source.find("OutputDebugStringW"), std::string::npos);
+  EXPECT_NE(source.find("decode_us="), std::string::npos);
+  EXPECT_NE(source.find("total_us="), std::string::npos);
+  EXPECT_NE(source.find("loaded->path.wstring()"), std::string::npos);
+}
+
 }  // namespace

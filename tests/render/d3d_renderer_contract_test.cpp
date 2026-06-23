@@ -63,5 +63,21 @@ TEST(D3dRendererContractTest, ResizeAttemptsToRestoreTargetAfterFailure) {
             std::string::npos);
 }
 
+TEST(D3dRendererContractTest, StatusTextUsesDirectWriteWhenNoImage) {
+  const std::string source = renderer_source();
+
+  EXPECT_NE(source.find("#include <dwrite.h>"), std::string::npos);
+  EXPECT_NE(source.find("DWriteCreateFactory"), std::string::npos);
+  EXPECT_NE(source.find("IDWriteFactory"), std::string::npos);
+  EXPECT_NE(source.find("IDWriteTextFormat"), std::string::npos);
+  EXPECT_NE(source.find("CreateSolidColorBrush"), std::string::npos);
+  EXPECT_NE(source.find("DrawTextW("), std::string::npos);
+  EXPECT_NE(source.find("status_text"), std::string::npos);
+  EXPECT_NE(source.find("void D3dRenderer::set_status_text"),
+            std::string::npos);
+  EXPECT_NE(source.find("if (!impl_->image && !impl_->status_text.empty())"),
+            std::string::npos);
+}
+
 }  // namespace
 }  // namespace viewer::render

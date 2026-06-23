@@ -8,6 +8,7 @@ add_executable(viewer_tests
   core/image_types_test.cpp
   core/async_shutdown_test.cpp
   core/load_generation_test.cpp
+  core/load_metrics_test.cpp
   core/natural_sort_test.cpp
   core/priority_executor_test.cpp
   core/smoke_test.cpp

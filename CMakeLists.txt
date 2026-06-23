@@ -51,6 +51,7 @@ if(WIN32)
     viewer_core
     d2d1
     d3d11
+    dwrite
     dxgi
   )
 

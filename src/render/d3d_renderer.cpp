@@ -4,6 +4,7 @@
 #include <d2d1_1helper.h>
 #include <d3d11_1.h>
 #include <d3dumddi.h>
+#include <dwrite.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "viewer/render/render_math.h"
@@ -117,6 +119,10 @@ struct D3dRenderer::Impl {
   ComPtr<ID2D1DeviceContext> d2d_context;
   ComPtr<ID2D1Bitmap1> target;
   ComPtr<ID2D1Bitmap1> image;
+  ComPtr<IDWriteFactory> dwrite_factory;
+  ComPtr<IDWriteTextFormat> status_text_format;
+  ComPtr<ID2D1SolidColorBrush> status_text_brush;
+  std::wstring status_text;
 
   void mark_lost() noexcept {
     lost = true;
@@ -126,6 +132,9 @@ struct D3dRenderer::Impl {
     image.Reset();
     target.Reset();
     swap_chain.Reset();
+    status_text_brush.Reset();
+    status_text_format.Reset();
+    dwrite_factory.Reset();
     d2d_context.Reset();
     d2d_device.Reset();
     d2d_factory.Reset();
@@ -226,6 +235,33 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
       impl_->d2d_context.ReleaseAndGetAddressOf());
   if (FAILED(result)) {
     return platform_failure(L"Direct2D context creation failed.");
+  }
+
+  result = DWriteCreateFactory(
+      DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+      reinterpret_cast<IUnknown**>(
+          impl_->dwrite_factory.ReleaseAndGetAddressOf()));
+  if (FAILED(result)) {
+    return platform_failure(L"DirectWrite factory creation failed.");
+  }
+
+  result = impl_->dwrite_factory->CreateTextFormat(
+      L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.0F, L"",
+      impl_->status_text_format.ReleaseAndGetAddressOf());
+  if (FAILED(result)) {
+    return platform_failure(L"DirectWrite text format creation failed.");
+  }
+  static_cast<void>(impl_->status_text_format->SetTextAlignment(
+      DWRITE_TEXT_ALIGNMENT_CENTER));
+  static_cast<void>(impl_->status_text_format->SetParagraphAlignment(
+      DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+
+  result = impl_->d2d_context->CreateSolidColorBrush(
+      D2D1::ColorF(0xD8DEE9, 1.0F),
+      impl_->status_text_brush.ReleaseAndGetAddressOf());
+  if (FAILED(result)) {
+    return platform_failure(L"Status text brush creation failed.");
   }
 
   ComPtr<IDXGIAdapter> adapter;
@@ -362,6 +398,12 @@ core::Result<bool> D3dRenderer::set_image(const core::ImageFrame& frame) {
   return core::Result<bool>::success(true);
 }
 
+void D3dRenderer::set_status_text(std::wstring text) {
+  if (impl_) {
+    impl_->status_text = std::move(text);
+  }
+}
+
 core::Result<bool> D3dRenderer::draw(
     const core::ViewTransform& transform) {
   if (impl_ && impl_->lost) {
@@ -390,6 +432,16 @@ core::Result<bool> D3dRenderer::draw(
         impl_->image.Get(), nullptr, 1.0F,
         D2D1_INTERPOLATION_MODE_LINEAR, nullptr);
     impl_->d2d_context->SetTransform(D2D1::Matrix3x2F::Identity());
+  } else if (!impl_->image && !impl_->status_text.empty()) {
+    const D2D1_SIZE_U viewport_size = impl_->target->GetPixelSize();
+    const D2D1_RECT_F layout = D2D1::RectF(
+        32.0F, 0.0F, static_cast<float>(viewport_size.width) - 32.0F,
+        static_cast<float>(viewport_size.height));
+    impl_->d2d_context->DrawTextW(
+        impl_->status_text.c_str(),
+        static_cast<UINT32>(impl_->status_text.size()),
+        impl_->status_text_format.Get(), layout,
+        impl_->status_text_brush.Get());
   }
 
   const HRESULT draw_result = impl_->d2d_context->EndDraw();

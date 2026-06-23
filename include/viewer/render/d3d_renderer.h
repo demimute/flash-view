@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <memory>
+#include <string>
 
 #include "viewer/core/image_frame.h"
 #include "viewer/core/result.h"
@@ -22,6 +23,7 @@ class D3dRenderer {
   core::Result<bool> initialize(HWND window);
   core::Result<bool> resize(unsigned width, unsigned height);
   core::Result<bool> set_image(const core::ImageFrame& frame);
+  void set_status_text(std::wstring text);
   core::Result<bool> draw(const core::ViewTransform& transform);
   void clear_image();
 

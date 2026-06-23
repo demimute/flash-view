@@ -1,11 +1,13 @@
 #include "app/main_window.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -18,6 +20,7 @@
 #include "viewer/core/directory_navigator.h"
 #include "viewer/core/image_frame.h"
 #include "viewer/core/load_generation.h"
+#include "viewer/core/load_metrics.h"
 #include "viewer/core/priority_executor.h"
 #include "viewer/core/result.h"
 #include "viewer/core/three_frame_cache.h"
@@ -50,6 +53,7 @@ struct LoadedImage {
   core::LoadedImagePurpose purpose;
   bool display_when_ready;
   std::filesystem::path path;
+  core::LoadMetrics metrics;
   core::Result<core::ImageFrame> result;
 };
 
@@ -77,6 +81,33 @@ void CALLBACK reap_async_load_context(
   } catch (...) {
     // Threadpool callbacks must never allow C++ exceptions to escape.
   }
+}
+
+void output_load_debug_string(const LoadedImage* loaded,
+                              const core::Error* error = nullptr) {
+  if (loaded == nullptr) {
+    return;
+  }
+
+  const auto decode_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          loaded->metrics.decode_duration())
+          .count();
+  const auto total_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          loaded->metrics.total_duration())
+          .count();
+
+  std::wstring message = L"load path=\"" + loaded->path.wstring() +
+                         L"\" decode_us=" + std::to_wstring(decode_us) +
+                         L" total_us=" + std::to_wstring(total_us);
+  if (error != nullptr) {
+    message += L" error=\"";
+    message += error->message;
+    message += L"\"";
+  }
+  message += L"\n";
+  OutputDebugStringW(message.c_str());
 }
 
 }  // namespace
@@ -166,6 +197,7 @@ struct MainWindow::Impl {
       return true;
     }
 
+    renderer.set_status_text(L"");
     set_displayed_frame(frame);
     fit_displayed_frame();
     InvalidateRect(window, nullptr, FALSE);
@@ -197,11 +229,14 @@ struct MainWindow::Impl {
     const core::CancellationToken cancellation =
         context->cancellation.token();
     const std::uint64_t token = instance_token;
+    core::LoadMetrics metrics{
+        .requested = core::LoadMetrics::Clock::now(),
+    };
 
     const bool submitted = context->executor.submit(
         priority,
         [context, token, generation, purpose, display_when_ready,
-         cancellation, path] {
+         cancellation, path, metrics] mutable {
           if (cancellation.is_cancelled()) {
             return;
           }
@@ -211,7 +246,9 @@ struct MainWindow::Impl {
           }
 
           const platform::WicDecoder decoder;
+          metrics.decode_started = core::LoadMetrics::Clock::now();
           auto decoded = decoder.decode(path, decode_byte_budget);
+          metrics.decode_finished = core::LoadMetrics::Clock::now();
           if (cancellation.is_cancelled()) {
             return;
           }
@@ -226,6 +263,7 @@ struct MainWindow::Impl {
               .purpose = purpose,
               .display_when_ready = display_when_ready,
               .path = path,
+              .metrics = metrics,
               .result = std::move(decoded),
           });
           static_cast<void>(context->completions.publish(
@@ -524,8 +562,13 @@ LRESULT MainWindow::handle_message(
 
       if (!loaded->result.has_value()) {
         if (loaded->display_when_ready) {
+          const core::Error& error = loaded->result.error();
           impl_->renderer.clear_image();
+          impl_->renderer.set_status_text(
+              L"This image could not be opened.");
           impl_->reset_displayed_frame();
+          loaded->metrics.presented = core::LoadMetrics::Clock::now();
+          output_load_debug_string(loaded.get(), &error);
           InvalidateRect(impl_->window, nullptr, FALSE);
         }
         return 0;
@@ -553,8 +596,11 @@ LRESULT MainWindow::handle_message(
         return 0;
       }
 
+      impl_->renderer.set_status_text(L"");
       impl_->set_displayed_frame(frame);
       impl_->fit_displayed_frame();
+      loaded->metrics.presented = core::LoadMetrics::Clock::now();
+      output_load_debug_string(loaded.get());
       InvalidateRect(impl_->window, nullptr, FALSE);
       impl_->prefetch_neighbors();
       return 0;
