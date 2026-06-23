@@ -53,8 +53,38 @@ if(WIN32)
     d3d11
     dxgi
   )
+
+  add_executable(fast_viewer WIN32
+    src/app/app.cpp
+    src/app/main_window.cpp
+    src/app/resource.h
+    src/app/winmain.cpp
+  )
+  target_compile_features(fast_viewer PRIVATE cxx_std_20)
+  target_compile_definitions(fast_viewer PRIVATE
+    UNICODE
+    _UNICODE
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+  )
+  target_include_directories(fast_viewer PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  viewer_enable_warnings(fast_viewer)
+  target_link_libraries(fast_viewer PRIVATE
+    viewer_core
+    viewer_wic
+    viewer_render
+    comctl32
+    shell32
+    ole32
+  )
 endif()
 
 if(BUILD_TESTING)
   add_subdirectory(tests)
+  target_sources(viewer_tests PRIVATE
+    tests/app/window_state_test.cpp
+  )
 endif()
