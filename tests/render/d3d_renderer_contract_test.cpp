@@ -46,6 +46,9 @@ TEST(D3dRendererContractTest, ClassifiesAndClearsLostRenderTargets) {
   EXPECT_NE(source.find("ErrorCode::render_target_lost"), std::string::npos);
   EXPECT_NE(source.find("DXGI_ERROR_DRIVER_INTERNAL_ERROR"),
             std::string::npos);
+  EXPECT_NE(source.find("#include <d3dumddi.h>"), std::string::npos);
+  EXPECT_NE(source.find("result == D3DDDIERR_DEVICEREMOVED"),
+            std::string::npos);
   EXPECT_NE(source.find("mark_lost("), std::string::npos);
   EXPECT_NE(source.find("is_render_target_lost(draw_result)"),
             std::string::npos);

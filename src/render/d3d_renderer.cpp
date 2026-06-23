@@ -3,6 +3,7 @@
 #include <d2d1_1.h>
 #include <d2d1_1helper.h>
 #include <d3d11_1.h>
+#include <d3dumddi.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 
@@ -35,7 +36,8 @@ core::Result<bool> render_target_lost(const wchar_t* message) {
 bool is_device_lost(HRESULT result) noexcept {
   return result == DXGI_ERROR_DEVICE_REMOVED ||
          result == DXGI_ERROR_DEVICE_RESET ||
-         result == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+         result == DXGI_ERROR_DRIVER_INTERNAL_ERROR ||
+         result == D3DDDIERR_DEVICEREMOVED;
 }
 
 bool is_render_target_lost(HRESULT result) noexcept {
