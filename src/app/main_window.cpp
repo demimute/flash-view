@@ -3,11 +3,15 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
 
+#include <windowsx.h>
+
+#include "viewer/app/input_mapping.h"
 #include "viewer/app/window_state.h"
 #include "viewer/core/async_shutdown.h"
 #include "viewer/core/cancellation.h"
@@ -86,9 +90,14 @@ struct MainWindow::Impl {
       shutdown_handoff;
   render::D3dRenderer renderer;
   core::ViewTransform transform;
+  std::shared_ptr<core::ImageFrame> displayed_frame;
+  core::SizeU displayed_size{};
   std::optional<core::DirectoryNavigator> navigator;
   core::ThreeFrameCache frame_cache;
   core::PrefetchTracker prefetches;
+  WheelDeltaAccumulator wheel_delta;
+  bool panning = false;
+  POINT last_pointer{};
 
   [[nodiscard]] std::filesystem::path current_path() const {
     if (navigator.has_value()) {
@@ -115,13 +124,27 @@ struct MainWindow::Impl {
     return items[(index + 1) % items.size()];
   }
 
-  void fit_to_frame(const core::ImageFrame& frame) {
+  void reset_displayed_frame() noexcept {
+    displayed_frame.reset();
+    displayed_size = {};
+  }
+
+  void set_displayed_frame(std::shared_ptr<core::ImageFrame> frame) {
+    displayed_size = {frame->width, frame->height};
+    displayed_frame = std::move(frame);
+  }
+
+  void fit_displayed_frame() {
+    if (displayed_size.width == 0 || displayed_size.height == 0) {
+      return;
+    }
+
     RECT client{};
     if (GetClientRect(window, &client)) {
       const LONG width = client.right - client.left;
       const LONG height = client.bottom - client.top;
       if (width > 0 && height > 0) {
-        transform.fit({frame.width, frame.height},
+        transform.fit(displayed_size,
                       {static_cast<std::uint32_t>(width),
                        static_cast<std::uint32_t>(height)});
       }
@@ -138,12 +161,14 @@ struct MainWindow::Impl {
     auto upload_result = renderer.set_image(*frame);
     if (!upload_result.has_value()) {
       renderer.clear_image();
+      reset_displayed_frame();
       InvalidateRect(window, nullptr, FALSE);
       report_renderer_failure(upload_result.error());
       return true;
     }
 
-    fit_to_frame(*frame);
+    set_displayed_frame(frame);
+    fit_displayed_frame();
     InvalidateRect(window, nullptr, FALSE);
     return true;
   }
@@ -270,6 +295,13 @@ struct MainWindow::Impl {
     }
     static_cast<void>(navigator->next());
     show_current_or_request();
+  }
+
+  void end_pan() noexcept {
+    panning = false;
+    if (GetCapture() == window) {
+      ReleaseCapture();
+    }
   }
 
   void report_renderer_failure(const core::Error& error) {
@@ -494,6 +526,7 @@ LRESULT MainWindow::handle_message(
       if (!loaded->result.has_value()) {
         if (loaded->display_when_ready) {
           impl_->renderer.clear_image();
+          impl_->reset_displayed_frame();
           InvalidateRect(impl_->window, nullptr, FALSE);
         }
         return 0;
@@ -515,38 +548,90 @@ LRESULT MainWindow::handle_message(
       auto upload_result = impl_->renderer.set_image(*frame);
       if (!upload_result.has_value()) {
         impl_->renderer.clear_image();
+        impl_->reset_displayed_frame();
         InvalidateRect(impl_->window, nullptr, FALSE);
         impl_->report_renderer_failure(upload_result.error());
         return 0;
       }
 
-      impl_->fit_to_frame(*frame);
+      impl_->set_displayed_frame(frame);
+      impl_->fit_displayed_frame();
       InvalidateRect(impl_->window, nullptr, FALSE);
       impl_->prefetch_neighbors();
       return 0;
     }
 
+    case WM_MOUSEWHEEL: {
+      const int steps = impl_->wheel_delta.consume(
+          GET_WHEEL_DELTA_WPARAM(wparam));
+      if (steps != 0) {
+        impl_->transform.zoom_by(
+            static_cast<float>(std::pow(1.1, steps)));
+        InvalidateRect(impl_->window, nullptr, FALSE);
+      }
+      return 0;
+    }
+
+    case WM_LBUTTONDOWN:
+      impl_->panning = true;
+      impl_->last_pointer = POINT{GET_X_LPARAM(lparam),
+                                  GET_Y_LPARAM(lparam)};
+      SetCapture(impl_->window);
+      return 0;
+
+    case WM_MOUSEMOVE:
+      if (impl_->panning) {
+        const POINT pointer{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const int dx = pointer.x - impl_->last_pointer.x;
+        const int dy = pointer.y - impl_->last_pointer.y;
+        impl_->last_pointer = pointer;
+        if (dx != 0 || dy != 0) {
+          impl_->transform.pan_by(static_cast<float>(dx),
+                                  static_cast<float>(dy));
+          InvalidateRect(impl_->window, nullptr, FALSE);
+        }
+        return 0;
+      }
+      break;
+
+    case WM_LBUTTONUP:
+    case WM_CANCELMODE:
+    case WM_CAPTURECHANGED:
+      impl_->end_pan();
+      return 0;
+
     case WM_KEYDOWN:
-      switch (wparam) {
-        case VK_LEFT:
-        case VK_UP:
-        case VK_PRIOR:
+      switch (classify_key(static_cast<unsigned>(wparam))) {
+        case KeyAction::previous:
           impl_->navigate_previous();
           return 0;
 
-        case VK_RIGHT:
-        case VK_DOWN:
-        case VK_NEXT:
-        case VK_SPACE:
+        case KeyAction::next:
           impl_->navigate_next();
           return 0;
 
-        default:
+        case KeyAction::fit:
+          impl_->fit_displayed_frame();
+          InvalidateRect(impl_->window, nullptr, FALSE);
+          return 0;
+
+        case KeyAction::one_to_one:
+          impl_->transform.one_to_one();
+          InvalidateRect(impl_->window, nullptr, FALSE);
+          return 0;
+
+        case KeyAction::rotate_clockwise:
+          impl_->transform.rotate_clockwise();
+          InvalidateRect(impl_->window, nullptr, FALSE);
+          return 0;
+
+        case KeyAction::none:
           break;
       }
       break;
 
     case WM_CLOSE:
+      impl_->end_pan();
       impl_->shutdown_async();
       DestroyWindow(impl_->window);
       return 0;
