@@ -96,8 +96,7 @@ struct MainWindow::Impl {
   core::ThreeFrameCache frame_cache;
   core::PrefetchTracker prefetches;
   WheelDeltaAccumulator wheel_delta;
-  bool panning = false;
-  POINT last_pointer{};
+  PanTracker pan;
 
   [[nodiscard]] std::filesystem::path current_path() const {
     if (navigator.has_value()) {
@@ -298,7 +297,7 @@ struct MainWindow::Impl {
   }
 
   void end_pan() noexcept {
-    panning = false;
+    pan.end();
     if (GetCapture() == window) {
       ReleaseCapture();
     }
@@ -573,21 +572,18 @@ LRESULT MainWindow::handle_message(
     }
 
     case WM_LBUTTONDOWN:
-      impl_->panning = true;
-      impl_->last_pointer = POINT{GET_X_LPARAM(lparam),
-                                  GET_Y_LPARAM(lparam)};
+      impl_->pan.begin(
+          {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
       SetCapture(impl_->window);
       return 0;
 
     case WM_MOUSEMOVE:
-      if (impl_->panning) {
-        const POINT pointer{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-        const int dx = pointer.x - impl_->last_pointer.x;
-        const int dy = pointer.y - impl_->last_pointer.y;
-        impl_->last_pointer = pointer;
-        if (dx != 0 || dy != 0) {
-          impl_->transform.pan_by(static_cast<float>(dx),
-                                  static_cast<float>(dy));
+      if (const std::optional<PanDelta> delta = impl_->pan.move_to(
+              {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+          delta.has_value()) {
+        if (delta->dx != 0 || delta->dy != 0) {
+          impl_->transform.pan_by(static_cast<float>(delta->dx),
+                                  static_cast<float>(delta->dy));
           InvalidateRect(impl_->window, nullptr, FALSE);
         }
         return 0;

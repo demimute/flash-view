@@ -128,4 +128,36 @@ TEST(AsyncLoadContractTest, UnhandledKeyboardInputFallsThroughToDefWindowProc) {
             std::string::npos);
 }
 
+TEST(AsyncLoadContractTest, PointerPanningUsesPanTrackerHelper) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("PanTracker pan"), std::string::npos);
+  EXPECT_EQ(source.find("bool panning = false"), std::string::npos);
+  EXPECT_EQ(source.find("POINT last_pointer"), std::string::npos);
+
+  const std::size_t button_down = source.find("case WM_LBUTTONDOWN:");
+  ASSERT_NE(button_down, std::string::npos);
+  const std::size_t mouse_move = source.find("case WM_MOUSEMOVE:", button_down);
+  ASSERT_NE(mouse_move, std::string::npos);
+  const std::string down_block =
+      source.substr(button_down, mouse_move - button_down);
+  EXPECT_NE(down_block.find(".begin("), std::string::npos);
+  EXPECT_NE(down_block.find("SetCapture(impl_->window)"), std::string::npos);
+
+  const std::size_t button_up = source.find("case WM_LBUTTONUP:", mouse_move);
+  ASSERT_NE(button_up, std::string::npos);
+  const std::string move_block =
+      source.substr(mouse_move, button_up - mouse_move);
+  EXPECT_NE(move_block.find(".move_to("), std::string::npos);
+  EXPECT_NE(move_block.find("has_value()"), std::string::npos);
+  EXPECT_NE(move_block.find("transform.pan_by"), std::string::npos);
+
+  const std::size_t key_down = source.find("case WM_KEYDOWN:", button_up);
+  ASSERT_NE(key_down, std::string::npos);
+  const std::string end_block = source.substr(button_up, key_down - button_up);
+  EXPECT_NE(end_block.find("end_pan()"), std::string::npos);
+  EXPECT_NE(source.find("pan.end()"), std::string::npos);
+  EXPECT_NE(source.find("ReleaseCapture()"), std::string::npos);
+}
+
 }  // namespace

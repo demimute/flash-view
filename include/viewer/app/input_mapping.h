@@ -54,15 +54,19 @@ enum class KeyAction {
 class WheelDeltaAccumulator {
  public:
   [[nodiscard]] int consume(int delta) noexcept {
-    partial_delta_ += delta;
-    const int steps = partial_delta_ / kWheelDelta;
+    partial_delta_ += static_cast<std::int64_t>(delta);
+    const std::int64_t steps = partial_delta_ / kWheelDelta;
     partial_delta_ -= steps * kWheelDelta;
-    return steps;
+    return static_cast<int>(steps);
+  }
+
+  [[nodiscard]] int pending_delta() const noexcept {
+    return static_cast<int>(partial_delta_);
   }
 
  private:
-  static constexpr int kWheelDelta = 120;
-  int partial_delta_ = 0;
+  static constexpr std::int64_t kWheelDelta = 120;
+  std::int64_t partial_delta_ = 0;
 };
 
 struct Point {

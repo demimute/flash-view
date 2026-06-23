@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+#include <limits>
+
 namespace viewer::app {
 namespace {
 
@@ -46,6 +49,34 @@ TEST(InputMappingTest, WheelAccumulatorKeepsPartialDelta) {
   EXPECT_EQ(wheel.consume(1), 1);
   EXPECT_EQ(wheel.consume(-30), 0);
   EXPECT_EQ(wheel.consume(-90), -1);
+}
+
+TEST(InputMappingTest, WheelAccumulatorHandlesExtremePositiveDeltaSafely) {
+  WheelDeltaAccumulator wheel;
+
+  EXPECT_EQ(wheel.consume(std::numeric_limits<int>::max()), 17895697);
+  EXPECT_EQ(wheel.pending_delta(), 7);
+  EXPECT_LT(std::abs(wheel.pending_delta()), 120);
+}
+
+TEST(InputMappingTest, WheelAccumulatorHandlesExtremeNegativeDeltaSafely) {
+  WheelDeltaAccumulator wheel;
+
+  EXPECT_EQ(wheel.consume(std::numeric_limits<int>::min()), -17895697);
+  EXPECT_EQ(wheel.pending_delta(), -8);
+  EXPECT_LT(std::abs(wheel.pending_delta()), 120);
+}
+
+TEST(InputMappingTest, WheelAccumulatorKeepsPartialBoundedAcrossLargeDeltas) {
+  WheelDeltaAccumulator wheel;
+
+  EXPECT_EQ(wheel.consume(std::numeric_limits<int>::max()), 17895697);
+  EXPECT_EQ(wheel.pending_delta(), 7);
+  EXPECT_EQ(wheel.consume(std::numeric_limits<int>::max()), 17895697);
+  EXPECT_EQ(wheel.pending_delta(), 14);
+  EXPECT_EQ(wheel.consume(std::numeric_limits<int>::min()), -17895696);
+  EXPECT_EQ(wheel.pending_delta(), -114);
+  EXPECT_LT(std::abs(wheel.pending_delta()), 120);
 }
 
 TEST(InputMappingTest, PanTrackerReportsDeltasOnlyWhilePanning) {
