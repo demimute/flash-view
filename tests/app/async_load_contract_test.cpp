@@ -174,9 +174,7 @@ TEST(AsyncLoadContractTest, LoadResultsCarryMetricsAndPath) {
   EXPECT_NE(source.find("metrics.decode_finished = "
                         "core::LoadMetrics::Clock::now()"),
             std::string::npos);
-  EXPECT_NE(source.find("loaded->metrics.presented = "
-                        "core::LoadMetrics::Clock::now()"),
-            std::string::npos);
+  EXPECT_NE(source.find("pending_load_debug"), std::string::npos);
 }
 
 TEST(AsyncLoadContractTest, DecodeFailuresShowPublicStatusAndLogDetails) {
@@ -187,7 +185,65 @@ TEST(AsyncLoadContractTest, DecodeFailuresShowPublicStatusAndLogDetails) {
   EXPECT_NE(source.find("OutputDebugStringW"), std::string::npos);
   EXPECT_NE(source.find("decode_us="), std::string::npos);
   EXPECT_NE(source.find("total_us="), std::string::npos);
-  EXPECT_NE(source.find("loaded->path.wstring()"), std::string::npos);
+  EXPECT_NE(source.find("pending.path.wstring()"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, LoadedImageHandlingDefersMetricsUntilPaint) {
+  const std::string source = main_window_source();
+
+  const std::size_t image_ready = source.find("case image_ready_message:");
+  ASSERT_NE(image_ready, std::string::npos);
+  const std::size_t wheel = source.find("case WM_MOUSEWHEEL:", image_ready);
+  ASSERT_NE(wheel, std::string::npos);
+  const std::string image_ready_block =
+      source.substr(image_ready, wheel - image_ready);
+
+  EXPECT_EQ(image_ready_block.find(".presented = "
+                                   "core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+  EXPECT_EQ(image_ready_block.find("OutputDebugStringW"), std::string::npos);
+  EXPECT_EQ(image_ready_block.find("output_load_debug_string"),
+            std::string::npos);
+  EXPECT_NE(image_ready_block.find("pending_load_debug ="),
+            std::string::npos);
+  EXPECT_NE(image_ready_block.find("InvalidateRect"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, PaintFlushesPendingMetricsAfterSuccessfulDraw) {
+  const std::string source = main_window_source();
+
+  const std::size_t paint = source.find("case WM_PAINT:");
+  ASSERT_NE(paint, std::string::npos);
+  const std::size_t image_ready = source.find("case image_ready_message:",
+                                             paint);
+  ASSERT_NE(image_ready, std::string::npos);
+  const std::string paint_block = source.substr(paint, image_ready - paint);
+
+  EXPECT_NE(paint_block.find("bool draw_succeeded = false"),
+            std::string::npos);
+  EXPECT_NE(paint_block.find("draw_succeeded = true"), std::string::npos);
+  EXPECT_NE(paint_block.find("EndPaint"), std::string::npos);
+  EXPECT_NE(paint_block.find("pending_load_debug.has_value()"),
+            std::string::npos);
+  EXPECT_NE(paint_block.find(".metrics.presented = "
+                             "core::LoadMetrics::Clock::now()"),
+            std::string::npos);
+  EXPECT_NE(paint_block.find("output_load_debug_string"),
+            std::string::npos);
+  EXPECT_NE(paint_block.find("pending_load_debug.reset()"),
+            std::string::npos);
+
+  const std::size_t draw_error = paint_block.find("if (draw_error.has_value())");
+  ASSERT_NE(draw_error, std::string::npos);
+  const std::size_t draw_success = paint_block.find("if (draw_succeeded",
+                                                    draw_error);
+  ASSERT_NE(draw_success, std::string::npos);
+  const std::string error_block =
+      paint_block.substr(draw_error, draw_success - draw_error);
+  EXPECT_EQ(error_block.find("pending_load_debug.reset()"),
+            std::string::npos);
+  EXPECT_EQ(error_block.find("output_load_debug_string"),
+            std::string::npos);
 }
 
 }  // namespace

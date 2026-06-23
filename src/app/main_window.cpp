@@ -57,6 +57,13 @@ struct LoadedImage {
   core::Result<core::ImageFrame> result;
 };
 
+struct PendingLoadDebugInfo {
+  std::filesystem::path path;
+  core::LoadMetrics metrics;
+  bool success = false;
+  std::optional<core::Error> error;
+};
+
 struct AsyncLoadContext {
   explicit AsyncLoadContext(std::uint64_t instance_token)
       : executor(worker_thread_count()),
@@ -83,27 +90,23 @@ void CALLBACK reap_async_load_context(
   }
 }
 
-void output_load_debug_string(const LoadedImage* loaded,
-                              const core::Error* error = nullptr) {
-  if (loaded == nullptr) {
-    return;
-  }
-
+void output_load_debug_string(const PendingLoadDebugInfo& pending) {
   const auto decode_us =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          loaded->metrics.decode_duration())
+          pending.metrics.decode_duration())
           .count();
   const auto total_us =
       std::chrono::duration_cast<std::chrono::microseconds>(
-          loaded->metrics.total_duration())
+          pending.metrics.total_duration())
           .count();
 
-  std::wstring message = L"load path=\"" + loaded->path.wstring() +
+  std::wstring message = L"load path=\"" + pending.path.wstring() +
                          L"\" decode_us=" + std::to_wstring(decode_us) +
                          L" total_us=" + std::to_wstring(total_us);
-  if (error != nullptr) {
+  message += pending.success ? L" result=success" : L" result=failure";
+  if (pending.error.has_value()) {
     message += L" error=\"";
-    message += error->message;
+    message += pending.error->message;
     message += L"\"";
   }
   message += L"\n";
@@ -123,6 +126,7 @@ struct MainWindow::Impl {
   core::ViewTransform transform;
   std::shared_ptr<core::ImageFrame> displayed_frame;
   core::SizeU displayed_size{};
+  std::optional<PendingLoadDebugInfo> pending_load_debug;
   std::optional<core::DirectoryNavigator> navigator;
   core::ThreeFrameCache frame_cache;
   core::PrefetchTracker prefetches;
@@ -192,12 +196,14 @@ struct MainWindow::Impl {
     if (!upload_result.has_value()) {
       renderer.clear_image();
       reset_displayed_frame();
+      pending_load_debug.reset();
       InvalidateRect(window, nullptr, FALSE);
       report_renderer_failure(upload_result.error());
       return true;
     }
 
     renderer.set_status_text(L"");
+    pending_load_debug.reset();
     set_displayed_frame(frame);
     fit_displayed_frame();
     InvalidateRect(window, nullptr, FALSE);
@@ -232,6 +238,9 @@ struct MainWindow::Impl {
     core::LoadMetrics metrics{
         .requested = core::LoadMetrics::Clock::now(),
     };
+    if (display_when_ready) {
+      pending_load_debug.reset();
+    }
 
     const bool submitted = context->executor.submit(
         priority,
@@ -516,16 +525,26 @@ LRESULT MainWindow::handle_message(
       BeginPaint(impl_->window, &paint);
 
       std::optional<core::Error> draw_error;
+      bool draw_succeeded = false;
       if (impl_->renderer_ready) {
         auto draw_result = impl_->renderer.draw(impl_->transform);
         if (!draw_result.has_value()) {
           draw_error = std::move(draw_result.error());
+        } else {
+          draw_succeeded = true;
         }
       }
 
       EndPaint(impl_->window, &paint);
       if (draw_error.has_value()) {
         impl_->report_renderer_failure(*draw_error);
+        return 0;
+      }
+      if (draw_succeeded && impl_->pending_load_debug.has_value()) {
+        PendingLoadDebugInfo& pending = *impl_->pending_load_debug;
+        pending.metrics.presented = core::LoadMetrics::Clock::now();
+        output_load_debug_string(pending);
+        impl_->pending_load_debug.reset();
       }
       return 0;
     }
@@ -567,8 +586,12 @@ LRESULT MainWindow::handle_message(
           impl_->renderer.set_status_text(
               L"This image could not be opened.");
           impl_->reset_displayed_frame();
-          loaded->metrics.presented = core::LoadMetrics::Clock::now();
-          output_load_debug_string(loaded.get(), &error);
+          impl_->pending_load_debug = PendingLoadDebugInfo{
+              .path = loaded->path,
+              .metrics = loaded->metrics,
+              .success = false,
+              .error = error,
+          };
           InvalidateRect(impl_->window, nullptr, FALSE);
         }
         return 0;
@@ -599,8 +622,11 @@ LRESULT MainWindow::handle_message(
       impl_->renderer.set_status_text(L"");
       impl_->set_displayed_frame(frame);
       impl_->fit_displayed_frame();
-      loaded->metrics.presented = core::LoadMetrics::Clock::now();
-      output_load_debug_string(loaded.get());
+      impl_->pending_load_debug = PendingLoadDebugInfo{
+          .path = loaded->path,
+          .metrics = loaded->metrics,
+          .success = true,
+      };
       InvalidateRect(impl_->window, nullptr, FALSE);
       impl_->prefetch_neighbors();
       return 0;
