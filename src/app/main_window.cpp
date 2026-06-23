@@ -56,11 +56,19 @@ struct AsyncLoadContext {
   core::CompletionGate<HWND, std::uint64_t> completions;
 };
 
-void reap_async_load_context(
-    std::shared_ptr<AsyncLoadContext> context) {
-  std::thread([context = std::move(context)] {
-    context->executor.stop();
-  }).detach();
+struct ShutdownPayload {
+  std::shared_ptr<AsyncLoadContext> context;
+};
+
+void CALLBACK reap_async_load_context(
+    PTP_CALLBACK_INSTANCE, void* raw_payload) noexcept {
+  std::unique_ptr<ShutdownPayload> payload(
+      static_cast<ShutdownPayload*>(raw_payload));
+  try {
+    payload->context->executor.stop();
+  } catch (...) {
+    // Threadpool callbacks must never allow C++ exceptions to escape.
+  }
 }
 
 }  // namespace
@@ -69,8 +77,9 @@ struct MainWindow::Impl {
   HWND window = nullptr;
   bool renderer_ready = false;
   const std::uint64_t instance_token = next_instance_token();
-  core::AsyncShutdownState<AsyncLoadContext> async_load{
-      std::make_shared<AsyncLoadContext>(instance_token)};
+  std::shared_ptr<AsyncLoadContext> async_load;
+  std::unique_ptr<core::ShutdownHandoff<ShutdownPayload>>
+      shutdown_handoff;
   render::D3dRenderer renderer;
   core::ViewTransform transform;
 
@@ -93,17 +102,29 @@ struct MainWindow::Impl {
     }
   }
 
-  void shutdown_async() {
-    std::shared_ptr<AsyncLoadContext> context =
-        async_load.take_context();
-    if (!context) {
+  void shutdown_async() noexcept {
+    if (!shutdown_handoff) {
       return;
     }
 
+    ShutdownPayload* const payload = shutdown_handoff->take();
+    if (payload == nullptr) {
+      return;
+    }
+
+    std::shared_ptr<AsyncLoadContext> context = payload->context;
+    async_load.reset();
     static_cast<void>(context->completions.close());
     context->cancellation.cancel();
     discard_pending_completions();
-    reap_async_load_context(std::move(context));
+
+    if (!TrySubmitThreadpoolCallback(
+            &reap_async_load_context, payload, nullptr)) {
+      // Extreme resource exhaustion: retain the released, preallocated
+      // payload as a bounded process-lifetime leak (at most one per window).
+      // Its closed gate prevents window access, and the OS reclaims it at
+      // process exit. Blocking or throwing from WM_CLOSE would be worse.
+    }
   }
 };
 
@@ -117,6 +138,17 @@ MainWindow::~MainWindow() {
 }
 
 bool MainWindow::create(HINSTANCE instance, int show_command) {
+  try {
+    impl_->async_load =
+        std::make_shared<AsyncLoadContext>(impl_->instance_token);
+    impl_->shutdown_handoff = std::make_unique<
+        core::ShutdownHandoff<ShutdownPayload>>(
+        std::make_unique<ShutdownPayload>(
+            ShutdownPayload{impl_->async_load}));
+  } catch (...) {
+    return false;
+  }
+
   WNDCLASSEXW window_class{
       .cbSize = sizeof(WNDCLASSEXW),
       .style = CS_HREDRAW | CS_VREDRAW,
@@ -138,9 +170,8 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
     return false;
   }
 
-  if (const auto context = impl_->async_load.context()) {
-    context->completions.activate(window, impl_->instance_token);
-  }
+  impl_->async_load->completions.activate(
+      window, impl_->instance_token);
 
   auto initialize_result = impl_->renderer.initialize(window);
   if (!initialize_result.has_value()) {
@@ -156,7 +187,7 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
 
 void MainWindow::open_path(const std::filesystem::path& path) {
   const std::shared_ptr<AsyncLoadContext> context =
-      impl_->async_load.context();
+      impl_->async_load;
   if (impl_->window == nullptr || !context) {
     return;
   }
@@ -280,7 +311,7 @@ LRESULT MainWindow::handle_message(
       std::unique_ptr<LoadedImage> loaded(
           reinterpret_cast<LoadedImage*>(lparam));
       const std::shared_ptr<AsyncLoadContext> context =
-          impl_->async_load.context();
+          impl_->async_load;
       if (!loaded || loaded->instance_token != impl_->instance_token ||
           !context ||
           !context->generation.is_current(loaded->generation)) {

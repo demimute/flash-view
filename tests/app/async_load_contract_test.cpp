@@ -47,4 +47,21 @@ TEST(AsyncLoadContractTest, WorkerNeverCapturesWindowObject) {
   EXPECT_EQ(source.find("[impl"), std::string::npos);
 }
 
+TEST(AsyncLoadContractTest, UsesNoexceptWindowsThreadpoolReaper) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("TrySubmitThreadpoolCallback"), std::string::npos);
+  EXPECT_NE(source.find("CALLBACK reap_async_load_context"), std::string::npos);
+  EXPECT_NE(source.find("noexcept"), std::string::npos);
+  EXPECT_EQ(source.find(".detach()"), std::string::npos);
+  EXPECT_EQ(source.find("std::thread(["), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, SubmissionFailureIntentionallyRetainsPayload) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("bounded process-lifetime leak"), std::string::npos);
+  EXPECT_NE(source.find("release"), std::string::npos);
+}
+
 }  // namespace

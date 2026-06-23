@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -78,6 +79,25 @@ class AsyncShutdownState {
  private:
   mutable std::mutex mutex_;
   std::shared_ptr<Context> context_;
+};
+
+template <typename Payload>
+class ShutdownHandoff {
+ public:
+  explicit ShutdownHandoff(std::unique_ptr<Payload> payload) noexcept
+      : payload_(payload.release()) {}
+
+  ~ShutdownHandoff() { delete payload_.load(std::memory_order_relaxed); }
+
+  ShutdownHandoff(const ShutdownHandoff&) = delete;
+  ShutdownHandoff& operator=(const ShutdownHandoff&) = delete;
+
+  [[nodiscard]] Payload* take() noexcept {
+    return payload_.exchange(nullptr, std::memory_order_acq_rel);
+  }
+
+ private:
+  std::atomic<Payload*> payload_;
 };
 
 }  // namespace viewer::core

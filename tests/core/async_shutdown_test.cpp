@@ -95,5 +95,24 @@ TEST(AsyncShutdownStateTest, ContextCanOnlyBeHandedOffOnce) {
   EXPECT_EQ(second, nullptr);
 }
 
+TEST(ShutdownHandoffTest, PreallocatedPayloadCanOnlyBeTakenOnce) {
+  auto handoff =
+      ShutdownHandoff<int>(std::make_unique<int>(42));
+
+  int* const first = handoff.take();
+  int* const second = handoff.take();
+
+  ASSERT_NE(first, nullptr);
+  EXPECT_EQ(*first, 42);
+  EXPECT_EQ(second, nullptr);
+  delete first;
+}
+
+TEST(ShutdownHandoffTest, TakeIsNoexcept) {
+  ShutdownHandoff<int> handoff(std::make_unique<int>(42));
+
+  static_assert(noexcept(handoff.take()));
+}
+
 }  // namespace
 }  // namespace viewer::core
