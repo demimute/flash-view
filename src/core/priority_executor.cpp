@@ -10,42 +10,6 @@
 
 namespace viewer::core {
 
-struct PriorityExecutor::State {
-  struct Task {
-    Priority priority;
-    std::uint64_t sequence;
-    std::function<void()> function;
-  };
-
-  struct TaskCompare {
-    [[nodiscard]] bool operator()(const Task& lhs,
-                                  const Task& rhs) const noexcept {
-      if (lhs.priority != rhs.priority) {
-        return lhs.priority > rhs.priority;
-      }
-      return lhs.sequence > rhs.sequence;
-    }
-  };
-
-  enum class Lifecycle {
-    not_started,
-    running,
-    stopping,
-    stopped,
-  };
-
-  std::mutex mutex;
-  std::condition_variable work_available;
-  std::condition_variable idle;
-  std::priority_queue<Task, std::vector<Task>, TaskCompare> tasks;
-  std::unordered_set<std::thread::id> worker_ids;
-  std::uint64_t next_sequence = 0;
-  std::size_t active_tasks = 0;
-  std::size_t idle_waiter_count = 0;
-  std::size_t stop_waiter_count = 0;
-  Lifecycle lifecycle = Lifecycle::not_started;
-};
-
 namespace {
 
 [[nodiscard]] PriorityExecutor::ThreadFactory default_thread_factory() {
@@ -324,22 +288,6 @@ void PriorityExecutor::worker_loop(
 bool PriorityExecutor::called_from_worker() const noexcept {
   std::lock_guard lock(state_->mutex);
   return state_->worker_ids.contains(std::this_thread::get_id());
-}
-
-void PriorityExecutorTestPeer::wait_for_idle_waiters(
-    PriorityExecutor& executor, std::size_t count) {
-  std::unique_lock lock(executor.state_->mutex);
-  executor.state_->idle.wait(lock, [&executor, count] {
-    return executor.state_->idle_waiter_count >= count;
-  });
-}
-
-void PriorityExecutorTestPeer::wait_for_stop_waiters(
-    PriorityExecutor& executor, std::size_t count) {
-  std::unique_lock lock(executor.state_->mutex);
-  executor.state_->idle.wait(lock, [&executor, count] {
-    return executor.state_->stop_waiter_count >= count;
-  });
 }
 
 }  // namespace viewer::core

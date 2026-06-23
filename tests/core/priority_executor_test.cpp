@@ -13,6 +13,54 @@
 #include "viewer/core/priority_executor.h"
 
 namespace viewer::core {
+
+class PriorityExecutorTests {
+ public:
+  class ObserverHandle {
+   public:
+    ObserverHandle() = default;
+
+   private:
+    friend class PriorityExecutorTests;
+
+    explicit ObserverHandle(
+        std::shared_ptr<PriorityExecutor::State> state)
+        : state_(std::move(state)) {}
+
+    std::shared_ptr<PriorityExecutor::State> state_;
+  };
+
+  static ObserverHandle observe(PriorityExecutor& executor) {
+    return ObserverHandle(executor.state_);
+  }
+
+  static void wait_for_idle_waiters(PriorityExecutor& executor,
+                                    std::size_t count) {
+    wait_for_idle_waiters(observe(executor), count);
+  }
+
+  static void wait_for_idle_waiters(const ObserverHandle& handle,
+                                    std::size_t count) {
+    std::unique_lock lock(handle.state_->mutex);
+    handle.state_->idle.wait(lock, [&handle, count] {
+      return handle.state_->idle_waiter_count >= count;
+    });
+  }
+
+  static void wait_for_stop_waiters(PriorityExecutor& executor,
+                                    std::size_t count) {
+    wait_for_stop_waiters(observe(executor), count);
+  }
+
+  static void wait_for_stop_waiters(const ObserverHandle& handle,
+                                    std::size_t count) {
+    std::unique_lock lock(handle.state_->mutex);
+    handle.state_->idle.wait(lock, [&handle, count] {
+      return handle.state_->stop_waiter_count >= count;
+    });
+  }
+};
+
 namespace {
 
 using namespace std::chrono_literals;
@@ -83,7 +131,7 @@ TEST(PriorityExecutorTest, WaitIdleWaitsForAnActiveTask) {
     executor.wait_idle();
     wait_completion_order = ++completion_order;
   });
-  PriorityExecutorTestPeer::wait_for_idle_waiters(executor, 1);
+  PriorityExecutorTests::wait_for_idle_waiters(executor, 1);
   EXPECT_EQ(wait_result.wait_for(0s), std::future_status::timeout);
 
   release_task.set_value();
@@ -144,7 +192,7 @@ TEST(PriorityExecutorTest, DestructorWaitsForRunningTask) {
   auto started = task_started.get_future().share();
   std::promise<void> release_task;
   auto release = release_task.get_future().share();
-  std::promise<PriorityExecutor*> executor_created;
+  std::promise<PriorityExecutorTests::ObserverHandle> observer_created;
   std::promise<void> begin_destruction;
   auto destroy = begin_destruction.get_future().share();
 
@@ -154,15 +202,15 @@ TEST(PriorityExecutorTest, DestructorWaitsForRunningTask) {
       task_started.set_value();
       release.wait();
     }));
-    executor_created.set_value(executor.get());
+    observer_created.set_value(PriorityExecutorTests::observe(*executor));
     destroy.wait();
     executor.reset();
   });
 
-  PriorityExecutor* executor = executor_created.get_future().get();
+  auto observer = observer_created.get_future().get();
   started.wait();
   begin_destruction.set_value();
-  PriorityExecutorTestPeer::wait_for_stop_waiters(*executor, 1);
+  PriorityExecutorTests::wait_for_stop_waiters(observer, 1);
   EXPECT_EQ(lifetime.wait_for(0s), std::future_status::timeout);
   release_task.set_value();
   EXPECT_EQ(lifetime.wait_for(1s), std::future_status::ready);
@@ -217,12 +265,12 @@ TEST(PriorityExecutorTest, ConcurrentStopsWaitForTheSameDrainAndJoin) {
   auto first_stop = std::async(std::launch::async, [&] {
     executor.stop();
   });
-  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 1);
+  PriorityExecutorTests::wait_for_stop_waiters(executor, 1);
 
   auto second_stop = std::async(std::launch::async, [&] {
     executor.stop();
   });
-  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 2);
+  PriorityExecutorTests::wait_for_stop_waiters(executor, 2);
   EXPECT_EQ(first_stop.wait_for(0s), std::future_status::timeout);
   EXPECT_EQ(second_stop.wait_for(0s), std::future_status::timeout);
 
@@ -254,7 +302,7 @@ TEST(PriorityExecutorTest, WorkerStopRequestsDrainAndExternalStopJoins) {
 
   auto external_stop = std::async(std::launch::async,
                                   [&] { executor.stop(); });
-  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 1);
+  PriorityExecutorTests::wait_for_stop_waiters(executor, 1);
   EXPECT_EQ(external_stop.wait_for(0s), std::future_status::timeout);
 
   release_later_task.set_value();

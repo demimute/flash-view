@@ -6,19 +6,12 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace viewer::core {
-
-class PriorityExecutor;
-
-struct PriorityExecutorTestPeer {
-  static void wait_for_idle_waiters(PriorityExecutor& executor,
-                                    std::size_t count);
-  static void wait_for_stop_waiters(PriorityExecutor& executor,
-                                    std::size_t count);
-};
 
 enum class Priority : std::uint8_t {
   current_image = 0,
@@ -62,9 +55,43 @@ class PriorityExecutor {
   [[nodiscard]] bool submit(Priority priority, std::function<void()> task);
 
  private:
-  friend struct PriorityExecutorTestPeer;
+  friend class PriorityExecutorTests;
 
-  struct State;
+  struct State {
+    struct Task {
+      Priority priority;
+      std::uint64_t sequence;
+      std::function<void()> function;
+    };
+
+    struct TaskCompare {
+      [[nodiscard]] bool operator()(const Task& lhs,
+                                    const Task& rhs) const noexcept {
+        if (lhs.priority != rhs.priority) {
+          return lhs.priority > rhs.priority;
+        }
+        return lhs.sequence > rhs.sequence;
+      }
+    };
+
+    enum class Lifecycle {
+      not_started,
+      running,
+      stopping,
+      stopped,
+    };
+
+    std::mutex mutex;
+    std::condition_variable work_available;
+    std::condition_variable idle;
+    std::priority_queue<Task, std::vector<Task>, TaskCompare> tasks;
+    std::unordered_set<std::thread::id> worker_ids;
+    std::uint64_t next_sequence = 0;
+    std::size_t active_tasks = 0;
+    std::size_t idle_waiter_count = 0;
+    std::size_t stop_waiter_count = 0;
+    Lifecycle lifecycle = Lifecycle::not_started;
+  };
 
   static void worker_loop(const std::shared_ptr<State>& state);
   [[nodiscard]] bool called_from_worker() const noexcept;
