@@ -32,7 +32,9 @@ void ViewTransform::fit(SizeU image, SizeU viewport) noexcept {
       static_cast<double>(viewport.width) / image.width;
   const double vertical_scale =
       static_cast<double>(viewport.height) / image.height;
-  scale_ = static_cast<float>(std::min(horizontal_scale, vertical_scale));
+  scale_ = std::min(
+      static_cast<float>(std::min(horizontal_scale, vertical_scale)),
+      maximum_scale);
   minimum_scale_ = std::min(default_minimum_scale, scale_);
 }
 

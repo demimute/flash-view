@@ -26,6 +26,16 @@ TEST(ViewTransformTest, FitsImageInsideViewportWithoutAutomaticCentering) {
   EXPECT_FLOAT_EQ(transform.offset_y(), 0.0F);
 }
 
+TEST(ViewTransformTest, FitClampsToMaximumAndZoomsDownSmoothly) {
+  ViewTransform transform;
+
+  transform.fit({1, 1}, {800, 600});
+  ASSERT_FLOAT_EQ(transform.scale(), 64.0F);
+
+  transform.zoom_by(0.9F);
+  EXPECT_NEAR(transform.scale(), 57.6F, 0.00001F);
+}
+
 TEST(ViewTransformTest, OneToOneResetsScaleAndOffsets) {
   ViewTransform transform;
   transform.zoom_by(2.0F);
