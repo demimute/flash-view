@@ -87,7 +87,7 @@ TEST(AsyncLoadContractTest, MainWindowRequestsDisplayAndPrefetchSeparately) {
   EXPECT_NE(source.find("LoadedImagePurpose::prefetch"), std::string::npos);
 }
 
-TEST(AsyncLoadContractTest, KeyboardNavigationMapsOnlyNavigationKeys) {
+TEST(AsyncLoadContractTest, KeyboardInputDelegatesToInputMapping) {
   const std::string source = main_window_source();
 
   const std::size_t key_case = source.find("case WM_KEYDOWN:");
@@ -96,15 +96,36 @@ TEST(AsyncLoadContractTest, KeyboardNavigationMapsOnlyNavigationKeys) {
   ASSERT_NE(close_case, std::string::npos);
   const std::string key_block = source.substr(key_case, close_case - key_case);
 
-  EXPECT_NE(key_block.find("VK_LEFT"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_UP"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_PRIOR"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_RIGHT"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_DOWN"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_NEXT"), std::string::npos);
-  EXPECT_NE(key_block.find("VK_SPACE"), std::string::npos);
+  EXPECT_NE(key_block.find("classify_key(static_cast<unsigned>(wparam))"),
+            std::string::npos);
+  EXPECT_EQ(key_block.find("VK_LEFT"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_UP"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_PRIOR"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_RIGHT"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_DOWN"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_NEXT"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_SPACE"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, UnhandledKeyboardInputFallsThroughToDefWindowProc) {
+  const std::string source = main_window_source();
+
+  const std::size_t key_case = source.find("case WM_KEYDOWN:");
+  ASSERT_NE(key_case, std::string::npos);
+  const std::size_t close_case = source.find("case WM_CLOSE:", key_case);
+  ASSERT_NE(close_case, std::string::npos);
+  const std::string key_block = source.substr(key_case, close_case - key_case);
+
+  const std::size_t none_case = key_block.find("case KeyAction::none:");
+  ASSERT_NE(none_case, std::string::npos);
+  const std::string none_block = key_block.substr(none_case);
   EXPECT_NE(key_block.find("break;"), std::string::npos);
-  EXPECT_EQ(key_block.find("VK_F"), std::string::npos);
+  EXPECT_NE(none_block.find("break;"), std::string::npos);
+  EXPECT_EQ(none_block.find("return 0;"), std::string::npos);
+  EXPECT_NE(source.find("return DefWindowProcW(impl_->window, message, wparam, "
+                        "lparam);",
+                        close_case),
+            std::string::npos);
 }
 
 }  // namespace
