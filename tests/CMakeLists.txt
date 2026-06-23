@@ -8,6 +8,7 @@ add_executable(viewer_tests
   core/priority_executor_test.cpp
   core/smoke_test.cpp
   core/view_transform_test.cpp
+  render/d3d_renderer_contract_test.cpp
   render/render_math_test.cpp
 )
 
@@ -18,6 +19,9 @@ if(WIN32)
 endif()
 
 target_compile_features(viewer_tests PRIVATE cxx_std_20)
+target_compile_definitions(viewer_tests PRIVATE
+  "TEST_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+)
 target_link_libraries(viewer_tests PRIVATE
   viewer_core
   GTest::gtest_main

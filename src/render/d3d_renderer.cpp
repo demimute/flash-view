@@ -27,6 +27,21 @@ core::Result<bool> platform_failure(const wchar_t* message) {
       {core::ErrorCode::platform_error, message});
 }
 
+core::Result<bool> render_target_lost(const wchar_t* message) {
+  return core::Result<bool>::failure(
+      {core::ErrorCode::render_target_lost, message});
+}
+
+bool is_device_lost(HRESULT result) noexcept {
+  return result == DXGI_ERROR_DEVICE_REMOVED ||
+         result == DXGI_ERROR_DEVICE_RESET ||
+         result == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+}
+
+bool is_render_target_lost(HRESULT result) noexcept {
+  return result == D2DERR_RECREATE_TARGET || is_device_lost(result);
+}
+
 float window_dpi(HWND window) noexcept {
   using GetDpiForWindowFunction = UINT(WINAPI*)(HWND);
   const HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -91,6 +106,7 @@ HRESULT create_d3d_device(UINT flags, ID3D11Device** device,
 
 struct D3dRenderer::Impl {
   HWND window = nullptr;
+  bool lost = false;
   ComPtr<ID3D11Device> d3d_device;
   ComPtr<ID3D11DeviceContext> d3d_context;
   ComPtr<IDXGISwapChain1> swap_chain;
@@ -99,6 +115,22 @@ struct D3dRenderer::Impl {
   ComPtr<ID2D1DeviceContext> d2d_context;
   ComPtr<ID2D1Bitmap1> target;
   ComPtr<ID2D1Bitmap1> image;
+
+  void mark_lost() noexcept {
+    lost = true;
+    if (d2d_context) {
+      d2d_context->SetTarget(nullptr);
+    }
+    image.Reset();
+    target.Reset();
+    swap_chain.Reset();
+    d2d_context.Reset();
+    d2d_device.Reset();
+    d2d_factory.Reset();
+    d3d_context.Reset();
+    d3d_device.Reset();
+    window = nullptr;
+  }
 
   HRESULT create_target() {
     ComPtr<IDXGISurface> surface;
@@ -109,13 +141,11 @@ struct D3dRenderer::Impl {
     }
 
     const float dpi = window_dpi(window);
-    const D2D1_BITMAP_PROPERTIES1 properties{
+    const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
                           D2D1_ALPHA_MODE_IGNORE),
-        dpi,
-        dpi,
-    };
+        dpi, dpi);
     result = d2d_context->CreateBitmapFromDxgiSurface(
         surface.Get(), &properties, target.ReleaseAndGetAddressOf());
     if (SUCCEEDED(result)) {
@@ -159,6 +189,11 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
   }
 #endif
   if (FAILED(result)) {
+    if (is_device_lost(result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Direct3D device was lost during renderer initialization.");
+    }
     return platform_failure(L"Direct3D device creation failed.");
   }
 
@@ -223,6 +258,11 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
         impl_->swap_chain.ReleaseAndGetAddressOf());
   }
   if (FAILED(result)) {
+    if (is_device_lost(result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Direct3D device was lost while creating the swap chain.");
+    }
     return platform_failure(L"Swap chain creation failed.");
   }
 
@@ -231,33 +271,63 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
 
   result = impl_->create_target();
   if (FAILED(result)) {
+    if (is_render_target_lost(result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Render target was lost during renderer initialization.");
+    }
     return platform_failure(L"Render target creation failed.");
   }
 
+  impl_->lost = false;
   return core::Result<bool>::success(true);
 }
 
 core::Result<bool> D3dRenderer::resize(unsigned width, unsigned height) {
-  if (!impl_ || !impl_->swap_chain || width == 0 || height == 0) {
+  if (impl_ && impl_->lost) {
+    return render_target_lost(L"Renderer render target is lost.");
+  }
+  if (!impl_ || !impl_->swap_chain || !impl_->d2d_context) {
+    return platform_failure(L"Renderer is not initialized.");
+  }
+  if (width == 0 || height == 0) {
     return core::Result<bool>::success(true);
   }
 
   impl_->d2d_context->SetTarget(nullptr);
   impl_->target.Reset();
 
-  const HRESULT result = impl_->swap_chain->ResizeBuffers(
+  const HRESULT resize_result = impl_->swap_chain->ResizeBuffers(
       0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-  if (FAILED(result)) {
+  if (FAILED(resize_result)) {
+    if (is_render_target_lost(resize_result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Direct3D device was lost while resizing the swap chain.");
+    }
+
+    const HRESULT recovery_result = impl_->create_target();
+    if (FAILED(recovery_result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Swap chain resize failed and its render target could not be "
+          L"restored.");
+    }
     return platform_failure(L"Swap chain resize failed.");
   }
 
-  if (FAILED(impl_->create_target())) {
-    return platform_failure(L"Render target recreation failed.");
+  const HRESULT target_result = impl_->create_target();
+  if (FAILED(target_result)) {
+    impl_->mark_lost();
+    return render_target_lost(L"Render target recreation failed.");
   }
   return core::Result<bool>::success(true);
 }
 
 core::Result<bool> D3dRenderer::set_image(const core::ImageFrame& frame) {
+  if (impl_ && impl_->lost) {
+    return render_target_lost(L"Renderer render target is lost.");
+  }
   if (!impl_ || !impl_->d2d_context) {
     return platform_failure(L"Renderer is not initialized.");
   }
@@ -278,6 +348,11 @@ core::Result<bool> D3dRenderer::set_image(const core::ImageFrame& frame) {
       D2D1::SizeU(frame.width, frame.height), frame.pixels.data(),
       frame.stride, &properties, uploaded_image.ReleaseAndGetAddressOf());
   if (FAILED(result)) {
+    if (is_render_target_lost(result)) {
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Render target was lost while uploading the image bitmap.");
+    }
     return platform_failure(L"Image bitmap upload failed.");
   }
 
@@ -287,6 +362,9 @@ core::Result<bool> D3dRenderer::set_image(const core::ImageFrame& frame) {
 
 core::Result<bool> D3dRenderer::draw(
     const core::ViewTransform& transform) {
+  if (impl_ && impl_->lost) {
+    return render_target_lost(L"Renderer render target is lost.");
+  }
   if (!impl_ || !impl_->d2d_context || !impl_->target ||
       !impl_->swap_chain) {
     return platform_failure(L"Renderer is not initialized.");
@@ -313,8 +391,10 @@ core::Result<bool> D3dRenderer::draw(
   }
 
   const HRESULT draw_result = impl_->d2d_context->EndDraw();
-  if (draw_result == D2DERR_RECREATE_TARGET) {
-    return platform_failure(L"Direct2D render target must be recreated.");
+  if (is_render_target_lost(draw_result)) {
+    impl_->mark_lost();
+    return render_target_lost(
+        L"Direct2D render target or Direct3D device was lost.");
   }
   if (FAILED(draw_result)) {
     return platform_failure(L"Direct2D drawing failed.");
@@ -324,9 +404,11 @@ core::Result<bool> D3dRenderer::draw(
   if (present_result == DXGI_STATUS_OCCLUDED) {
     return core::Result<bool>::success(false);
   }
-  if (present_result == DXGI_ERROR_DEVICE_REMOVED ||
-      present_result == DXGI_ERROR_DEVICE_RESET) {
-    return platform_failure(L"Direct3D device was removed or reset.");
+  if (is_device_lost(present_result)) {
+    impl_->mark_lost();
+    return render_target_lost(
+        L"Direct3D device was removed, reset, or encountered an internal "
+        L"driver error.");
   }
   if (FAILED(present_result)) {
     return platform_failure(L"Swap chain presentation failed.");

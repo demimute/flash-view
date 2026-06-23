@@ -13,6 +13,7 @@ enum class ErrorCode {
   io_error,
   decode_error,
   resource_limit,
+  render_target_lost,
   platform_error,
 };
 

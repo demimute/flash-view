@@ -12,6 +12,16 @@
 namespace viewer::core {
 namespace {
 
+TEST(ErrorCodeTest, DistinguishesLostRenderTargets) {
+  constexpr Error error{
+      .code = ErrorCode::render_target_lost,
+      .message = L"lost",
+  };
+
+  EXPECT_EQ(error.code, ErrorCode::render_target_lost);
+  EXPECT_NE(error.code, ErrorCode::platform_error);
+}
+
 TEST(LoadRequestTest, StoresPathAndGeneration) {
   const LoadRequest request{
       .path = L"C:\\images\\a.jpg",
