@@ -21,6 +21,23 @@ target_include_directories(viewer_core
 viewer_enable_warnings(viewer_core)
 target_link_libraries(viewer_core PUBLIC Threads::Threads)
 
+if(WIN32)
+  add_library(viewer_wic STATIC
+    src/platform/wic_decoder.cpp
+  )
+  target_compile_features(viewer_wic PUBLIC cxx_std_20)
+  target_include_directories(viewer_wic
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  )
+  viewer_enable_warnings(viewer_wic)
+  target_link_libraries(viewer_wic PUBLIC
+    viewer_core
+    windowscodecs
+    ole32
+  )
+endif()
+
 if(BUILD_TESTING)
   add_subdirectory(tests)
 endif()
