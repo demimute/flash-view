@@ -7,7 +7,7 @@
 namespace viewer::core {
 namespace {
 
-constexpr float minimum_scale = 0.01F;
+constexpr float default_minimum_scale = 0.01F;
 constexpr float maximum_scale = 64.0F;
 
 }  // namespace
@@ -19,6 +19,7 @@ void ViewTransform::fit(SizeU image, SizeU viewport) noexcept {
   if (image.width == 0 || image.height == 0 || viewport.width == 0 ||
       viewport.height == 0) {
     scale_ = 1.0F;
+    minimum_scale_ = default_minimum_scale;
     return;
   }
 
@@ -32,10 +33,12 @@ void ViewTransform::fit(SizeU image, SizeU viewport) noexcept {
   const double vertical_scale =
       static_cast<double>(viewport.height) / image.height;
   scale_ = static_cast<float>(std::min(horizontal_scale, vertical_scale));
+  minimum_scale_ = std::min(default_minimum_scale, scale_);
 }
 
 void ViewTransform::one_to_one() noexcept {
   scale_ = 1.0F;
+  minimum_scale_ = default_minimum_scale;
   offset_x_ = 0.0F;
   offset_y_ = 0.0F;
 }
@@ -45,7 +48,7 @@ void ViewTransform::zoom_by(float factor) noexcept {
     return;
   }
 
-  scale_ = std::clamp(scale_ * factor, minimum_scale, maximum_scale);
+  scale_ = std::clamp(scale_ * factor, minimum_scale_, maximum_scale);
 }
 
 void ViewTransform::pan_by(float dx, float dy) noexcept {

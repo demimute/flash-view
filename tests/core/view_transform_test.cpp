@@ -48,6 +48,28 @@ TEST(ViewTransformTest, ZoomIsClamped) {
   EXPECT_FLOAT_EQ(transform.scale(), 0.01F);
 }
 
+TEST(ViewTransformTest, ZoomFromSmallFitUsesFittedScaleAsMinimum) {
+  ViewTransform transform;
+  transform.fit({100000, 100000}, {800, 800});
+  ASSERT_FLOAT_EQ(transform.scale(), 0.008F);
+
+  transform.zoom_by(1.1F);
+  EXPECT_NEAR(transform.scale(), 0.0088F, 0.000001F);
+
+  transform.zoom_by(0.00001F);
+  EXPECT_FLOAT_EQ(transform.scale(), 0.008F);
+}
+
+TEST(ViewTransformTest, OneToOneRestoresDefaultMinimumScale) {
+  ViewTransform transform;
+  transform.fit({100000, 100000}, {800, 800});
+
+  transform.one_to_one();
+  transform.zoom_by(0.00001F);
+
+  EXPECT_FLOAT_EQ(transform.scale(), 0.01F);
+}
+
 TEST(ViewTransformTest, RotationCyclesClockwise) {
   ViewTransform transform;
 
@@ -71,6 +93,16 @@ TEST(ViewTransformTest, ZeroSizedFitResetsScaleAndOffsets) {
   EXPECT_FLOAT_EQ(transform.scale(), 1.0F);
   EXPECT_FLOAT_EQ(transform.offset_x(), 0.0F);
   EXPECT_FLOAT_EQ(transform.offset_y(), 0.0F);
+}
+
+TEST(ViewTransformTest, ZeroSizedFitRestoresDefaultMinimumScale) {
+  ViewTransform transform;
+  transform.fit({100000, 100000}, {800, 800});
+
+  transform.fit({0, 2000}, {1000, 1000});
+  transform.zoom_by(0.00001F);
+
+  EXPECT_FLOAT_EQ(transform.scale(), 0.01F);
 }
 
 TEST(ViewTransformTest, FitUsesRotatedDimensionsAtNinetyDegrees) {
