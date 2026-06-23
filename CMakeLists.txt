@@ -12,6 +12,7 @@ add_library(viewer_core STATIC
   src/core/format_probe.cpp
   src/core/natural_sort.cpp
   src/core/priority_executor.cpp
+  src/core/view_transform.cpp
 )
 target_compile_features(viewer_core PUBLIC cxx_std_20)
 target_include_directories(viewer_core
