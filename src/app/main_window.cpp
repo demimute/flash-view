@@ -11,10 +11,12 @@
 #include "viewer/app/window_state.h"
 #include "viewer/core/async_shutdown.h"
 #include "viewer/core/cancellation.h"
+#include "viewer/core/directory_navigator.h"
 #include "viewer/core/image_frame.h"
 #include "viewer/core/load_generation.h"
 #include "viewer/core/priority_executor.h"
 #include "viewer/core/result.h"
+#include "viewer/core/three_frame_cache.h"
 #include "viewer/core/view_transform.h"
 #include "viewer/platform/wic_decoder.h"
 #include "viewer/render/d3d_renderer.h"
@@ -41,6 +43,8 @@ std::size_t worker_thread_count() noexcept {
 struct LoadedImage {
   std::uint64_t instance_token;
   std::uint64_t generation;
+  core::LoadedImagePurpose purpose;
+  bool display_when_ready;
   std::filesystem::path path;
   core::Result<core::ImageFrame> result;
 };
@@ -82,6 +86,191 @@ struct MainWindow::Impl {
       shutdown_handoff;
   render::D3dRenderer renderer;
   core::ViewTransform transform;
+  std::optional<core::DirectoryNavigator> navigator;
+  core::ThreeFrameCache frame_cache;
+  core::PrefetchTracker prefetches;
+
+  [[nodiscard]] std::filesystem::path current_path() const {
+    if (navigator.has_value()) {
+      return navigator->current();
+    }
+    return {};
+  }
+
+  [[nodiscard]] std::filesystem::path previous_path() const {
+    if (!navigator.has_value() || navigator->items().empty()) {
+      return current_path();
+    }
+    const auto& items = navigator->items();
+    const std::size_t index = navigator->current_index();
+    return items[index == 0 ? items.size() - 1 : index - 1];
+  }
+
+  [[nodiscard]] std::filesystem::path next_path() const {
+    if (!navigator.has_value() || navigator->items().empty()) {
+      return current_path();
+    }
+    const auto& items = navigator->items();
+    const std::size_t index = navigator->current_index();
+    return items[(index + 1) % items.size()];
+  }
+
+  void fit_to_frame(const core::ImageFrame& frame) {
+    RECT client{};
+    if (GetClientRect(window, &client)) {
+      const LONG width = client.right - client.left;
+      const LONG height = client.bottom - client.top;
+      if (width > 0 && height > 0) {
+        transform.fit({frame.width, frame.height},
+                      {static_cast<std::uint32_t>(width),
+                       static_cast<std::uint32_t>(height)});
+      }
+    }
+  }
+
+  bool display_cached(const std::filesystem::path& path) {
+    const std::shared_ptr<core::ImageFrame> frame =
+        frame_cache.find(path);
+    if (!frame) {
+      return false;
+    }
+
+    auto upload_result = renderer.set_image(*frame);
+    if (!upload_result.has_value()) {
+      renderer.clear_image();
+      InvalidateRect(window, nullptr, FALSE);
+      report_renderer_failure(upload_result.error());
+      return true;
+    }
+
+    fit_to_frame(*frame);
+    InvalidateRect(window, nullptr, FALSE);
+    return true;
+  }
+
+  void retain_relevant_frames() {
+    const std::filesystem::path current = current_path();
+    if (current.empty()) {
+      return;
+    }
+    frame_cache.retain(current, previous_path(), next_path());
+  }
+
+  void request_image(const std::filesystem::path& path,
+                     core::Priority priority,
+                     bool display_when_ready) {
+    const std::shared_ptr<AsyncLoadContext> context = async_load;
+    if (window == nullptr || !context) {
+      return;
+    }
+
+    const core::LoadedImagePurpose purpose =
+        display_when_ready ? core::LoadedImagePurpose::display
+                           : core::LoadedImagePurpose::prefetch;
+    const std::uint64_t generation =
+        display_when_ready ? context->generation.begin()
+                           : context->generation.current();
+    const core::CancellationToken cancellation =
+        context->cancellation.token();
+    const std::uint64_t token = instance_token;
+
+    const bool submitted = context->executor.submit(
+        priority,
+        [context, token, generation, purpose, display_when_ready,
+         cancellation, path] {
+          if (cancellation.is_cancelled()) {
+            return;
+          }
+          if (display_when_ready &&
+              !context->generation.is_current(generation)) {
+            return;
+          }
+
+          const platform::WicDecoder decoder;
+          auto decoded = decoder.decode(path, decode_byte_budget);
+          if (cancellation.is_cancelled()) {
+            return;
+          }
+          if (display_when_ready &&
+              !context->generation.is_current(generation)) {
+            return;
+          }
+
+          auto payload = std::make_unique<LoadedImage>(LoadedImage{
+              .instance_token = token,
+              .generation = generation,
+              .purpose = purpose,
+              .display_when_ready = display_when_ready,
+              .path = path,
+              .result = std::move(decoded),
+          });
+          static_cast<void>(context->completions.publish(
+              payload,
+              [](HWND target, std::uint64_t gate_token,
+                 LoadedImage* loaded) {
+                if (loaded->instance_token != gate_token) {
+                  return false;
+                }
+                return PostMessageW(
+                           target, image_ready_message, 0,
+                           reinterpret_cast<LPARAM>(loaded)) != FALSE;
+              }));
+        });
+
+    if (!submitted) {
+      if (display_when_ready) {
+        MessageBoxW(window, L"Unable to schedule image decoding.",
+                    window_title, MB_OK | MB_ICONERROR);
+      } else {
+        prefetches.finish(path);
+      }
+    }
+  }
+
+  void prefetch_neighbors() {
+    if (!navigator.has_value()) {
+      return;
+    }
+
+    const std::filesystem::path previous = previous_path();
+    const std::filesystem::path next = next_path();
+    if (prefetches.should_submit(previous, frame_cache)) {
+      request_image(previous, core::Priority::adjacent_image, false);
+    }
+    if (!core::paths_match(next, previous) &&
+        prefetches.should_submit(next, frame_cache)) {
+      request_image(next, core::Priority::adjacent_image, false);
+    }
+  }
+
+  void show_current_or_request() {
+    const std::filesystem::path current = current_path();
+    if (current.empty()) {
+      return;
+    }
+
+    retain_relevant_frames();
+    if (!display_cached(current)) {
+      request_image(current, core::Priority::current_image, true);
+    }
+    prefetch_neighbors();
+  }
+
+  void navigate_previous() {
+    if (!navigator.has_value()) {
+      return;
+    }
+    static_cast<void>(navigator->previous());
+    show_current_or_request();
+  }
+
+  void navigate_next() {
+    if (!navigator.has_value()) {
+      return;
+    }
+    static_cast<void>(navigator->next());
+    show_current_or_request();
+  }
 
   void report_renderer_failure(const core::Error& error) {
     renderer_ready = false;
@@ -194,50 +383,15 @@ void MainWindow::open_path(const std::filesystem::path& path) {
 
   context->cancellation.cancel();
   context->cancellation = core::CancellationSource{};
+  impl_->prefetches.clear();
+  impl_->navigator.reset();
 
-  const core::CancellationToken cancellation =
-      context->cancellation.token();
-  const std::uint64_t generation = context->generation.begin();
-  const std::uint64_t instance_token = impl_->instance_token;
-
-  const bool submitted = context->executor.submit(
-      core::Priority::current_image,
-      [context, instance_token, generation, cancellation, path] {
-        if (cancellation.is_cancelled() ||
-            !context->generation.is_current(generation)) {
-          return;
-        }
-
-        const platform::WicDecoder decoder;
-        auto decoded = decoder.decode(path, decode_byte_budget);
-        if (cancellation.is_cancelled() ||
-            !context->generation.is_current(generation)) {
-          return;
-        }
-
-        auto payload = std::make_unique<LoadedImage>(LoadedImage{
-            .instance_token = instance_token,
-            .generation = generation,
-            .path = path,
-            .result = std::move(decoded),
-        });
-        static_cast<void>(context->completions.publish(
-            payload,
-            [](HWND target, std::uint64_t gate_token,
-               LoadedImage* loaded) {
-              if (loaded->instance_token != gate_token) {
-                return false;
-              }
-              return PostMessageW(
-                         target, image_ready_message, 0,
-                         reinterpret_cast<LPARAM>(loaded)) != FALSE;
-            }));
-      });
-
-  if (!submitted) {
-    context->cancellation.cancel();
-    MessageBoxW(impl_->window, L"Unable to schedule image decoding.",
-                window_title, MB_OK | MB_ICONERROR);
+  auto navigator = core::DirectoryNavigator::scan(path);
+  if (navigator.has_value()) {
+    impl_->navigator = std::move(navigator).value();
+    impl_->show_current_or_request();
+  } else {
+    impl_->request_image(path, core::Priority::current_image, true);
   }
 }
 
@@ -313,19 +467,52 @@ LRESULT MainWindow::handle_message(
       const std::shared_ptr<AsyncLoadContext> context =
           impl_->async_load;
       if (!loaded || loaded->instance_token != impl_->instance_token ||
-          !context ||
-          !context->generation.is_current(loaded->generation)) {
+          !context) {
+        return 0;
+      }
+      if (loaded->purpose == core::LoadedImagePurpose::prefetch) {
+        impl_->prefetches.finish(loaded->path);
+      }
+
+      const std::filesystem::path current = impl_->current_path();
+      const std::filesystem::path previous = impl_->previous_path();
+      const std::filesystem::path next = impl_->next_path();
+      if (loaded->display_when_ready) {
+        if (!context->generation.is_current(loaded->generation) ||
+            (!current.empty() &&
+             !core::paths_match(loaded->path, current))) {
+          return 0;
+        }
+      } else if (current.empty() ||
+                 !core::should_accept_loaded_image(
+                     loaded->purpose, loaded->path, current, previous,
+                     next, loaded->generation,
+                     context->generation.current())) {
         return 0;
       }
 
       if (!loaded->result.has_value()) {
-        impl_->renderer.clear_image();
-        InvalidateRect(impl_->window, nullptr, FALSE);
+        if (loaded->display_when_ready) {
+          impl_->renderer.clear_image();
+          InvalidateRect(impl_->window, nullptr, FALSE);
+        }
         return 0;
       }
 
-      const core::ImageFrame& frame = loaded->result.value();
-      auto upload_result = impl_->renderer.set_image(frame);
+      auto frame = std::make_shared<core::ImageFrame>(
+          std::move(loaded->result).value());
+      impl_->frame_cache.remember(loaded->path, frame);
+      impl_->retain_relevant_frames();
+
+      const bool should_display =
+          loaded->display_when_ready ||
+          core::paths_match(loaded->path, current);
+
+      if (!should_display) {
+        return 0;
+      }
+
+      auto upload_result = impl_->renderer.set_image(*frame);
       if (!upload_result.has_value()) {
         impl_->renderer.clear_image();
         InvalidateRect(impl_->window, nullptr, FALSE);
@@ -333,20 +520,31 @@ LRESULT MainWindow::handle_message(
         return 0;
       }
 
-      RECT client{};
-      if (GetClientRect(impl_->window, &client)) {
-        const LONG width = client.right - client.left;
-        const LONG height = client.bottom - client.top;
-        if (width > 0 && height > 0) {
-          impl_->transform.fit(
-              {frame.width, frame.height},
-              {static_cast<std::uint32_t>(width),
-               static_cast<std::uint32_t>(height)});
-        }
-      }
+      impl_->fit_to_frame(*frame);
       InvalidateRect(impl_->window, nullptr, FALSE);
+      impl_->prefetch_neighbors();
       return 0;
     }
+
+    case WM_KEYDOWN:
+      switch (wparam) {
+        case VK_LEFT:
+        case VK_UP:
+        case VK_PRIOR:
+          impl_->navigate_previous();
+          return 0;
+
+        case VK_RIGHT:
+        case VK_DOWN:
+        case VK_NEXT:
+        case VK_SPACE:
+          impl_->navigate_next();
+          return 0;
+
+        default:
+          break;
+      }
+      break;
 
     case WM_CLOSE:
       impl_->shutdown_async();
@@ -372,6 +570,8 @@ LRESULT MainWindow::handle_message(
     default:
       return DefWindowProcW(impl_->window, message, wparam, lparam);
   }
+
+  return DefWindowProcW(impl_->window, message, wparam, lparam);
 }
 
 }  // namespace viewer::app

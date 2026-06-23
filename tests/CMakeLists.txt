@@ -10,6 +10,7 @@ add_executable(viewer_tests
   core/natural_sort_test.cpp
   core/priority_executor_test.cpp
   core/smoke_test.cpp
+  core/three_frame_cache_test.cpp
   core/view_transform_test.cpp
   render/d3d_renderer_contract_test.cpp
   render/render_math_test.cpp

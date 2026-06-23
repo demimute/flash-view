@@ -64,4 +64,47 @@ TEST(AsyncLoadContractTest, SubmissionFailureIntentionallyRetainsPayload) {
   EXPECT_NE(source.find("release"), std::string::npos);
 }
 
+TEST(AsyncLoadContractTest, MainWindowKeepsDirectoryNavigatorInImpl) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("std::optional<core::DirectoryNavigator> navigator"),
+            std::string::npos);
+  EXPECT_NE(source.find("core::DirectoryNavigator::scan(path)"),
+            std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, MainWindowRequestsDisplayAndPrefetchSeparately) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("void request_image(const std::filesystem::path& path"),
+            std::string::npos);
+  EXPECT_NE(source.find("core::Priority::current_image, true"),
+            std::string::npos);
+  EXPECT_NE(source.find("core::Priority::adjacent_image, false"),
+            std::string::npos);
+  EXPECT_NE(source.find("display_when_ready ? context->generation.begin()"),
+            std::string::npos);
+  EXPECT_NE(source.find("LoadedImagePurpose::prefetch"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, KeyboardNavigationMapsOnlyNavigationKeys) {
+  const std::string source = main_window_source();
+
+  const std::size_t key_case = source.find("case WM_KEYDOWN:");
+  ASSERT_NE(key_case, std::string::npos);
+  const std::size_t close_case = source.find("case WM_CLOSE:", key_case);
+  ASSERT_NE(close_case, std::string::npos);
+  const std::string key_block = source.substr(key_case, close_case - key_case);
+
+  EXPECT_NE(key_block.find("VK_LEFT"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_UP"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_PRIOR"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_RIGHT"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_DOWN"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_NEXT"), std::string::npos);
+  EXPECT_NE(key_block.find("VK_SPACE"), std::string::npos);
+  EXPECT_NE(key_block.find("break;"), std::string::npos);
+  EXPECT_EQ(key_block.find("VK_F"), std::string::npos);
+}
+
 }  // namespace

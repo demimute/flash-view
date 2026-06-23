@@ -15,6 +15,10 @@ class LoadGeneration {
     return current_.load(std::memory_order_acquire) == value;
   }
 
+  [[nodiscard]] std::uint64_t current() const noexcept {
+    return current_.load(std::memory_order_acquire);
+  }
+
  private:
   std::atomic_uint64_t current_{0};
 };
