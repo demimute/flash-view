@@ -8,6 +8,7 @@ add_executable(viewer_tests
   core/priority_executor_test.cpp
   core/smoke_test.cpp
   core/view_transform_test.cpp
+  render/render_math_test.cpp
 )
 
 if(WIN32)

@@ -37,6 +37,22 @@ if(WIN32)
     windowscodecs
     ole32
   )
+
+  add_library(viewer_render STATIC
+    src/render/d3d_renderer.cpp
+  )
+  target_compile_features(viewer_render PUBLIC cxx_std_20)
+  target_include_directories(viewer_render
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  )
+  viewer_enable_warnings(viewer_render)
+  target_link_libraries(viewer_render PUBLIC
+    viewer_core
+    d2d1
+    d3d11
+    dxgi
+  )
 endif()
 
 if(BUILD_TESTING)
