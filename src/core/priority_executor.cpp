@@ -41,6 +41,8 @@ struct PriorityExecutor::State {
   std::unordered_set<std::thread::id> worker_ids;
   std::uint64_t next_sequence = 0;
   std::size_t active_tasks = 0;
+  std::size_t idle_waiter_count = 0;
+  std::size_t stop_waiter_count = 0;
   Lifecycle lifecycle = Lifecycle::not_started;
 };
 
@@ -198,12 +200,27 @@ void PriorityExecutor::stop() {
   }
 
   if (join_in_progress_) {
+    {
+      std::lock_guard state_lock(state_->mutex);
+      ++state_->stop_waiter_count;
+      state_->idle.notify_all();
+    }
     lifecycle_changed_.wait(lifecycle_lock,
                             [this] { return joined_; });
+    {
+      std::lock_guard state_lock(state_->mutex);
+      --state_->stop_waiter_count;
+      state_->idle.notify_all();
+    }
     return;
   }
 
   join_in_progress_ = true;
+  {
+    std::lock_guard state_lock(state_->mutex);
+    ++state_->stop_waiter_count;
+    state_->idle.notify_all();
+  }
   auto workers = std::move(workers_);
   lifecycle_lock.unlock();
 
@@ -217,6 +234,7 @@ void PriorityExecutor::stop() {
   {
     std::lock_guard state_lock(state_->mutex);
     state_->lifecycle = State::Lifecycle::stopped;
+    --state_->stop_waiter_count;
     state_->idle.notify_all();
   }
   joined_ = true;
@@ -233,9 +251,15 @@ void PriorityExecutor::wait_idle() {
       start();
       state_lock.lock();
     }
-    state_->idle.wait(state_lock, [this] {
-      return state_->tasks.empty() && state_->active_tasks == 0;
-    });
+    if (!state_->tasks.empty() || state_->active_tasks != 0) {
+      ++state_->idle_waiter_count;
+      state_->idle.notify_all();
+      state_->idle.wait(state_lock, [this] {
+        return state_->tasks.empty() && state_->active_tasks == 0;
+      });
+      --state_->idle_waiter_count;
+      state_->idle.notify_all();
+    }
   }
 }
 
@@ -300,6 +324,22 @@ void PriorityExecutor::worker_loop(
 bool PriorityExecutor::called_from_worker() const noexcept {
   std::lock_guard lock(state_->mutex);
   return state_->worker_ids.contains(std::this_thread::get_id());
+}
+
+void PriorityExecutorTestPeer::wait_for_idle_waiters(
+    PriorityExecutor& executor, std::size_t count) {
+  std::unique_lock lock(executor.state_->mutex);
+  executor.state_->idle.wait(lock, [&executor, count] {
+    return executor.state_->idle_waiter_count >= count;
+  });
+}
+
+void PriorityExecutorTestPeer::wait_for_stop_waiters(
+    PriorityExecutor& executor, std::size_t count) {
+  std::unique_lock lock(executor.state_->mutex);
+  executor.state_->idle.wait(lock, [&executor, count] {
+    return executor.state_->stop_waiter_count >= count;
+  });
 }
 
 }  // namespace viewer::core

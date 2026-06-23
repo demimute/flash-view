@@ -68,26 +68,27 @@ TEST(PriorityExecutorTest, WaitIdleWaitsForAnActiveTask) {
   std::promise<void> task_started;
   std::promise<void> release_task;
   auto release = release_task.get_future().share();
-  std::promise<void> wait_entered;
-  std::atomic<bool> wait_returned = false;
+  std::atomic<int> completion_order = 0;
+  std::atomic<int> task_completion_order = 0;
+  std::atomic<int> wait_completion_order = 0;
 
   ASSERT_TRUE(executor.submit(Priority::current_image, [&] {
     task_started.set_value();
     release.wait();
+    task_completion_order = ++completion_order;
   }));
   task_started.get_future().wait();
 
   auto wait_result = std::async(std::launch::async, [&] {
-    wait_entered.set_value();
     executor.wait_idle();
-    wait_returned.store(true);
+    wait_completion_order = ++completion_order;
   });
-  wait_entered.get_future().wait();
-  EXPECT_FALSE(wait_returned.load());
+  PriorityExecutorTestPeer::wait_for_idle_waiters(executor, 1);
   EXPECT_EQ(wait_result.wait_for(0s), std::future_status::timeout);
 
   release_task.set_value();
   EXPECT_EQ(wait_result.wait_for(1s), std::future_status::ready);
+  EXPECT_LT(task_completion_order.load(), wait_completion_order.load());
 }
 
 TEST(PriorityExecutorTest, StopWaitsForActiveTaskAndDrainsAcceptedQueue) {
@@ -143,25 +144,25 @@ TEST(PriorityExecutorTest, DestructorWaitsForRunningTask) {
   auto started = task_started.get_future().share();
   std::promise<void> release_task;
   auto release = release_task.get_future().share();
-  std::promise<void> destructor_entered;
-  std::atomic<bool> destructor_returned = false;
+  std::promise<PriorityExecutor*> executor_created;
+  std::promise<void> begin_destruction;
+  auto destroy = begin_destruction.get_future().share();
 
   auto lifetime = std::async(std::launch::async, [&] {
-    {
-      PriorityExecutor executor(1);
-      EXPECT_TRUE(executor.submit(Priority::current_image, [&] {
-        task_started.set_value();
-        release.wait();
-      }));
-      started.wait();
-      destructor_entered.set_value();
-    }
-    destructor_returned = true;
+    auto executor = std::make_unique<PriorityExecutor>(1);
+    EXPECT_TRUE(executor->submit(Priority::current_image, [&] {
+      task_started.set_value();
+      release.wait();
+    }));
+    executor_created.set_value(executor.get());
+    destroy.wait();
+    executor.reset();
   });
 
+  PriorityExecutor* executor = executor_created.get_future().get();
   started.wait();
-  destructor_entered.get_future().wait();
-  EXPECT_FALSE(destructor_returned.load());
+  begin_destruction.set_value();
+  PriorityExecutorTestPeer::wait_for_stop_waiters(*executor, 1);
   EXPECT_EQ(lifetime.wait_for(0s), std::future_status::timeout);
   release_task.set_value();
   EXPECT_EQ(lifetime.wait_for(1s), std::future_status::ready);
@@ -206,8 +207,6 @@ TEST(PriorityExecutorTest, ConcurrentStopsWaitForTheSameDrainAndJoin) {
   std::promise<void> task_started;
   std::promise<void> release_task;
   auto release = release_task.get_future().share();
-  std::promise<void> first_stop_entered;
-  std::promise<void> second_stop_entered;
 
   ASSERT_TRUE(executor.submit(Priority::current_image, [&] {
     task_started.set_value();
@@ -216,19 +215,14 @@ TEST(PriorityExecutorTest, ConcurrentStopsWaitForTheSameDrainAndJoin) {
   task_started.get_future().wait();
 
   auto first_stop = std::async(std::launch::async, [&] {
-    first_stop_entered.set_value();
     executor.stop();
   });
-  first_stop_entered.get_future().wait();
-  while (executor.submit(Priority::background, [] {})) {
-    std::this_thread::yield();
-  }
+  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 1);
 
   auto second_stop = std::async(std::launch::async, [&] {
-    second_stop_entered.set_value();
     executor.stop();
   });
-  second_stop_entered.get_future().wait();
+  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 2);
   EXPECT_EQ(first_stop.wait_for(0s), std::future_status::timeout);
   EXPECT_EQ(second_stop.wait_for(0s), std::future_status::timeout);
 
@@ -240,22 +234,31 @@ TEST(PriorityExecutorTest, ConcurrentStopsWaitForTheSameDrainAndJoin) {
 TEST(PriorityExecutorTest, WorkerStopRequestsDrainAndExternalStopJoins) {
   PriorityExecutor executor(1, false);
   std::promise<void> worker_stop_returned;
-  std::vector<int> results;
+  std::promise<void> later_task_started;
+  std::promise<void> release_later_task;
+  auto release = release_later_task.get_future().share();
 
   ASSERT_TRUE(executor.submit(Priority::current_image, [&] {
-    results.push_back(1);
     executor.stop();
     worker_stop_returned.set_value();
   }));
-  ASSERT_TRUE(executor.submit(Priority::background,
-                              [&] { results.push_back(2); }));
+  ASSERT_TRUE(executor.submit(Priority::background, [&] {
+    later_task_started.set_value();
+    release.wait();
+  }));
 
   executor.start();
   ASSERT_EQ(worker_stop_returned.get_future().wait_for(1s),
             std::future_status::ready);
-  executor.stop();
+  later_task_started.get_future().wait();
 
-  EXPECT_EQ(results, (std::vector<int>{1, 2}));
+  auto external_stop = std::async(std::launch::async,
+                                  [&] { executor.stop(); });
+  PriorityExecutorTestPeer::wait_for_stop_waiters(executor, 1);
+  EXPECT_EQ(external_stop.wait_for(0s), std::future_status::timeout);
+
+  release_later_task.set_value();
+  EXPECT_EQ(external_stop.wait_for(1s), std::future_status::ready);
 }
 
 TEST(PriorityExecutorTest, StartFailureJoinsCreatedThreadsAndLeavesStopped) {

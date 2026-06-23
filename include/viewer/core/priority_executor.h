@@ -11,6 +11,15 @@
 
 namespace viewer::core {
 
+class PriorityExecutor;
+
+struct PriorityExecutorTestPeer {
+  static void wait_for_idle_waiters(PriorityExecutor& executor,
+                                    std::size_t count);
+  static void wait_for_stop_waiters(PriorityExecutor& executor,
+                                    std::size_t count);
+};
+
 enum class Priority : std::uint8_t {
   current_image = 0,
   visible_thumbnail = 1,
@@ -53,6 +62,8 @@ class PriorityExecutor {
   [[nodiscard]] bool submit(Priority priority, std::function<void()> task);
 
  private:
+  friend struct PriorityExecutorTestPeer;
+
   struct State;
 
   static void worker_loop(const std::shared_ptr<State>& state);
