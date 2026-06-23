@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "viewer/app/window_state.h"
+#include "viewer/core/async_shutdown.h"
 #include "viewer/core/cancellation.h"
 #include "viewer/core/image_frame.h"
 #include "viewer/core/load_generation.h"
@@ -44,17 +45,32 @@ struct LoadedImage {
   core::Result<core::ImageFrame> result;
 };
 
+struct AsyncLoadContext {
+  explicit AsyncLoadContext(std::uint64_t instance_token)
+      : executor(worker_thread_count()),
+        completions(nullptr, instance_token, false) {}
+
+  core::LoadGeneration generation;
+  core::CancellationSource cancellation;
+  core::PriorityExecutor executor;
+  core::CompletionGate<HWND, std::uint64_t> completions;
+};
+
+void reap_async_load_context(
+    std::shared_ptr<AsyncLoadContext> context) {
+  std::thread([context = std::move(context)] {
+    context->executor.stop();
+  }).detach();
+}
+
 }  // namespace
 
 struct MainWindow::Impl {
   HWND window = nullptr;
   bool renderer_ready = false;
-  bool shutting_down = false;
   const std::uint64_t instance_token = next_instance_token();
-  std::shared_ptr<core::LoadGeneration> generation =
-      std::make_shared<core::LoadGeneration>();
-  core::CancellationSource cancellation;
-  core::PriorityExecutor executor{worker_thread_count()};
+  core::AsyncShutdownState<AsyncLoadContext> async_load{
+      std::make_shared<AsyncLoadContext>(instance_token)};
   render::D3dRenderer renderer;
   core::ViewTransform transform;
 
@@ -77,21 +93,24 @@ struct MainWindow::Impl {
     }
   }
 
-  void shutdown() {
-    if (shutting_down) {
+  void shutdown_async() {
+    std::shared_ptr<AsyncLoadContext> context =
+        async_load.take_context();
+    if (!context) {
       return;
     }
-    shutting_down = true;
-    cancellation.cancel();
-    executor.stop();
+
+    static_cast<void>(context->completions.close());
+    context->cancellation.cancel();
     discard_pending_completions();
+    reap_async_load_context(std::move(context));
   }
 };
 
 MainWindow::MainWindow() : impl_(std::make_unique<Impl>()) {}
 
 MainWindow::~MainWindow() {
-  impl_->shutdown();
+  impl_->shutdown_async();
   if (impl_->window != nullptr && IsWindow(impl_->window)) {
     DestroyWindow(impl_->window);
   }
@@ -119,6 +138,10 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
     return false;
   }
 
+  if (const auto context = impl_->async_load.context()) {
+    context->completions.activate(window, impl_->instance_token);
+  }
+
   auto initialize_result = impl_->renderer.initialize(window);
   if (!initialize_result.has_value()) {
     DestroyWindow(window);
@@ -132,34 +155,32 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
 }
 
 void MainWindow::open_path(const std::filesystem::path& path) {
-  if (impl_->window == nullptr || impl_->shutting_down) {
+  const std::shared_ptr<AsyncLoadContext> context =
+      impl_->async_load.context();
+  if (impl_->window == nullptr || !context) {
     return;
   }
 
-  impl_->cancellation.cancel();
-  impl_->cancellation = core::CancellationSource{};
+  context->cancellation.cancel();
+  context->cancellation = core::CancellationSource{};
 
   const core::CancellationToken cancellation =
-      impl_->cancellation.token();
-  const std::shared_ptr<core::LoadGeneration> generation_state =
-      impl_->generation;
-  const std::uint64_t generation = generation_state->begin();
+      context->cancellation.token();
+  const std::uint64_t generation = context->generation.begin();
   const std::uint64_t instance_token = impl_->instance_token;
-  const HWND target = impl_->window;
 
-  const bool submitted = impl_->executor.submit(
+  const bool submitted = context->executor.submit(
       core::Priority::current_image,
-      [target, instance_token, generation, generation_state, cancellation,
-       path] {
+      [context, instance_token, generation, cancellation, path] {
         if (cancellation.is_cancelled() ||
-            !generation_state->is_current(generation)) {
+            !context->generation.is_current(generation)) {
           return;
         }
 
         const platform::WicDecoder decoder;
         auto decoded = decoder.decode(path, decode_byte_budget);
         if (cancellation.is_cancelled() ||
-            !generation_state->is_current(generation)) {
+            !context->generation.is_current(generation)) {
           return;
         }
 
@@ -169,14 +190,21 @@ void MainWindow::open_path(const std::filesystem::path& path) {
             .path = path,
             .result = std::move(decoded),
         });
-        if (PostMessageW(target, image_ready_message, 0,
-                         reinterpret_cast<LPARAM>(payload.get()))) {
-          payload.release();
-        }
+        static_cast<void>(context->completions.publish(
+            payload,
+            [](HWND target, std::uint64_t gate_token,
+               LoadedImage* loaded) {
+              if (loaded->instance_token != gate_token) {
+                return false;
+              }
+              return PostMessageW(
+                         target, image_ready_message, 0,
+                         reinterpret_cast<LPARAM>(loaded)) != FALSE;
+            }));
       });
 
   if (!submitted) {
-    impl_->cancellation.cancel();
+    context->cancellation.cancel();
     MessageBoxW(impl_->window, L"Unable to schedule image decoding.",
                 window_title, MB_OK | MB_ICONERROR);
   }
@@ -251,9 +279,11 @@ LRESULT MainWindow::handle_message(
     case image_ready_message: {
       std::unique_ptr<LoadedImage> loaded(
           reinterpret_cast<LoadedImage*>(lparam));
+      const std::shared_ptr<AsyncLoadContext> context =
+          impl_->async_load.context();
       if (!loaded || loaded->instance_token != impl_->instance_token ||
-          !impl_->generation->is_current(loaded->generation) ||
-          impl_->shutting_down) {
+          !context ||
+          !context->generation.is_current(loaded->generation)) {
         return 0;
       }
 
@@ -287,6 +317,11 @@ LRESULT MainWindow::handle_message(
       return 0;
     }
 
+    case WM_CLOSE:
+      impl_->shutdown_async();
+      DestroyWindow(impl_->window);
+      return 0;
+
     case WM_ERASEBKGND:
       return 1;
 
@@ -300,7 +335,6 @@ LRESULT MainWindow::handle_message(
     }
 
     case WM_DESTROY:
-      impl_->shutdown();
       PostQuitMessage(0);
       return 0;
 

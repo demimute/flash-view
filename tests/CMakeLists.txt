@@ -1,9 +1,11 @@
 find_package(GTest CONFIG REQUIRED)
 
 add_executable(viewer_tests
+  app/async_load_contract_test.cpp
   core/directory_navigator_test.cpp
   core/format_probe_test.cpp
   core/image_types_test.cpp
+  core/async_shutdown_test.cpp
   core/load_generation_test.cpp
   core/natural_sort_test.cpp
   core/priority_executor_test.cpp
