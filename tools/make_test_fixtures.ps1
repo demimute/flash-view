@@ -11,7 +11,7 @@ $bmp = [byte[]](
 )
 [IO.File]::WriteAllBytes((Join-Path $fixtureDir "1x1.bmp"), $bmp)
 
-$pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3MxZ5wAAAABJRU5ErkJggg=="
+$pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM4kWLUAAAFNQHfrDzxywAAAABJRU5ErkJggg=="
 [IO.File]::WriteAllBytes(
   (Join-Path $fixtureDir "1x1.png"),
   [Convert]::FromBase64String($pngBase64))

@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <Windows.h>
+#include <objbase.h>
+
 #include <cstddef>
 #include <filesystem>
 #include <string_view>
@@ -23,6 +26,22 @@ TEST(WicDecoderTest, DecodesPngDimensionsAndStride) {
   EXPECT_EQ(result.value().width, 1U);
   EXPECT_EQ(result.value().height, 1U);
   EXPECT_EQ(result.value().stride, 4U);
+}
+
+TEST(WicDecoderTest, DecodesPngToPremultipliedBgra) {
+  const WicDecoder decoder;
+
+  const auto result = decoder.decode(fixture_path(L"1x1.png"), 64U * 1024U);
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result.value().pixels.size(), 4U);
+  const auto channel = [&result](std::size_t index) {
+    return std::to_integer<int>(result.value().pixels[index]);
+  };
+  EXPECT_NEAR(channel(0), 25, 1);
+  EXPECT_NEAR(channel(1), 50, 1);
+  EXPECT_NEAR(channel(2), 100, 1);
+  EXPECT_EQ(channel(3), 128);
 }
 
 TEST(WicDecoderTest, DecodesBmpPixels) {
@@ -72,6 +91,19 @@ TEST(WicDecoderTest, RepeatedDecodeMaintainsComLifecycle) {
     ASSERT_TRUE(result.has_value()) << "attempt " << attempt;
     EXPECT_EQ(result.value().pixels.size(), 4U);
   }
+}
+
+TEST(WicDecoderHresultTest, FallsBackOnlyWhenWic2IsUnavailable) {
+  EXPECT_TRUE(detail::should_fallback_to_wic1(REGDB_E_CLASSNOTREG));
+  EXPECT_TRUE(detail::should_fallback_to_wic1(E_NOINTERFACE));
+  EXPECT_FALSE(detail::should_fallback_to_wic1(E_OUTOFMEMORY));
+  EXPECT_FALSE(detail::should_fallback_to_wic1(E_UNEXPECTED));
+}
+
+TEST(WicDecoderHresultTest, ClassifiesStorageSharingAndLockFailuresAsIo) {
+  EXPECT_TRUE(detail::is_io_error(STG_E_SHAREVIOLATION));
+  EXPECT_TRUE(detail::is_io_error(STG_E_LOCKVIOLATION));
+  EXPECT_FALSE(detail::is_io_error(WINCODEC_ERR_BADIMAGE));
 }
 
 }  // namespace

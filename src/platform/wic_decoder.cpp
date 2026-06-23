@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <objbase.h>
+#include <objidl.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -15,19 +16,6 @@ using Microsoft::WRL::ComPtr;
 core::Result<core::ImageFrame> failure(core::ErrorCode code,
                                        const wchar_t* message) {
   return core::Result<core::ImageFrame>::failure({code, message});
-}
-
-bool is_io_error(HRESULT result) {
-  return result == E_ACCESSDENIED || result == STG_E_ACCESSDENIED ||
-         result == STG_E_FILENOTFOUND || result == STG_E_PATHNOTFOUND ||
-         result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
-         result == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) ||
-         result == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) ||
-         result == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) ||
-         result == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION) ||
-         result == HRESULT_FROM_WIN32(ERROR_INVALID_DRIVE) ||
-         result == HRESULT_FROM_WIN32(ERROR_BAD_NETPATH) ||
-         result == HRESULT_FROM_WIN32(ERROR_NETWORK_UNREACHABLE);
 }
 
 class ComApartment {
@@ -61,6 +49,9 @@ HRESULT create_factory(ComPtr<IWICImagingFactory>& factory) {
   if (SUCCEEDED(result)) {
     return result;
   }
+  if (!detail::should_fallback_to_wic1(result)) {
+    return result;
+  }
 
   factory.Reset();
   return CoCreateInstance(CLSID_WICImagingFactory, nullptr,
@@ -69,6 +60,29 @@ HRESULT create_factory(ComPtr<IWICImagingFactory>& factory) {
 }
 
 }  // namespace
+
+namespace detail {
+
+bool should_fallback_to_wic1(long result) noexcept {
+  return result == REGDB_E_CLASSNOTREG || result == E_NOINTERFACE ||
+         result == CLASS_E_CLASSNOTAVAILABLE;
+}
+
+bool is_io_error(long result) noexcept {
+  return result == E_ACCESSDENIED || result == STG_E_ACCESSDENIED ||
+         result == STG_E_FILENOTFOUND || result == STG_E_PATHNOTFOUND ||
+         result == STG_E_SHAREVIOLATION || result == STG_E_LOCKVIOLATION ||
+         result == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) ||
+         result == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND) ||
+         result == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) ||
+         result == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) ||
+         result == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION) ||
+         result == HRESULT_FROM_WIN32(ERROR_INVALID_DRIVE) ||
+         result == HRESULT_FROM_WIN32(ERROR_BAD_NETPATH) ||
+         result == HRESULT_FROM_WIN32(ERROR_NETWORK_UNREACHABLE);
+}
+
+}  // namespace detail
 
 core::Result<core::ImageFrame> WicDecoder::decode(
     const std::filesystem::path& path,
@@ -91,8 +105,8 @@ core::Result<core::ImageFrame> WicDecoder::decode(
       path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
       decoder.GetAddressOf());
   if (FAILED(result)) {
-    return failure(is_io_error(result) ? core::ErrorCode::io_error
-                                       : core::ErrorCode::decode_error,
+    return failure(detail::is_io_error(result) ? core::ErrorCode::io_error
+                                               : core::ErrorCode::decode_error,
                    L"WIC could not open the image.");
   }
 

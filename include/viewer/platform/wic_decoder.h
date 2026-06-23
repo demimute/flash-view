@@ -8,6 +8,13 @@
 
 namespace viewer::platform {
 
+namespace detail {
+
+[[nodiscard]] bool should_fallback_to_wic1(long result) noexcept;
+[[nodiscard]] bool is_io_error(long result) noexcept;
+
+}  // namespace detail
+
 class WicDecoder {
  public:
   [[nodiscard]] core::Result<core::ImageFrame> decode(
