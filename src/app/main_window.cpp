@@ -1,11 +1,21 @@
 #include "app/main_window.h"
 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
+#include <thread>
 #include <utility>
 
 #include "viewer/app/window_state.h"
+#include "viewer/core/cancellation.h"
+#include "viewer/core/image_frame.h"
+#include "viewer/core/load_generation.h"
+#include "viewer/core/priority_executor.h"
 #include "viewer/core/result.h"
 #include "viewer/core/view_transform.h"
+#include "viewer/platform/wic_decoder.h"
 #include "viewer/render/d3d_renderer.h"
 
 namespace viewer::app {
@@ -13,14 +23,40 @@ namespace {
 
 constexpr wchar_t window_class_name[] = L"FastImageViewer.MainWindow";
 constexpr wchar_t window_title[] = L"Fast Image Viewer";
+constexpr UINT image_ready_message = WM_APP + 1;
+constexpr std::size_t decode_byte_budget =
+    std::size_t{512} * std::size_t{1024} * std::size_t{1024};
+
+std::uint64_t next_instance_token() noexcept {
+  static std::atomic_uint64_t next{1};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::size_t worker_thread_count() noexcept {
+  const unsigned hardware_threads = std::thread::hardware_concurrency();
+  return hardware_threads > 1 ? hardware_threads - 1 : 1;
+}
+
+struct LoadedImage {
+  std::uint64_t instance_token;
+  std::uint64_t generation;
+  std::filesystem::path path;
+  core::Result<core::ImageFrame> result;
+};
 
 }  // namespace
 
 struct MainWindow::Impl {
   HWND window = nullptr;
   bool renderer_ready = false;
+  bool shutting_down = false;
+  const std::uint64_t instance_token = next_instance_token();
+  std::shared_ptr<core::LoadGeneration> generation =
+      std::make_shared<core::LoadGeneration>();
+  core::CancellationSource cancellation;
+  core::PriorityExecutor executor{worker_thread_count()};
   render::D3dRenderer renderer;
-  std::optional<std::filesystem::path> pending_path;
+  core::ViewTransform transform;
 
   void report_renderer_failure(const core::Error& error) {
     renderer_ready = false;
@@ -28,11 +64,34 @@ struct MainWindow::Impl {
                 MB_OK | MB_ICONERROR);
     PostQuitMessage(1);
   }
+
+  void discard_pending_completions() noexcept {
+    if (window == nullptr) {
+      return;
+    }
+
+    MSG message{};
+    while (PeekMessageW(&message, window, image_ready_message,
+                        image_ready_message, PM_REMOVE)) {
+      delete reinterpret_cast<LoadedImage*>(message.lParam);
+    }
+  }
+
+  void shutdown() {
+    if (shutting_down) {
+      return;
+    }
+    shutting_down = true;
+    cancellation.cancel();
+    executor.stop();
+    discard_pending_completions();
+  }
 };
 
 MainWindow::MainWindow() : impl_(std::make_unique<Impl>()) {}
 
 MainWindow::~MainWindow() {
+  impl_->shutdown();
   if (impl_->window != nullptr && IsWindow(impl_->window)) {
     DestroyWindow(impl_->window);
   }
@@ -73,7 +132,54 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
 }
 
 void MainWindow::open_path(const std::filesystem::path& path) {
-  impl_->pending_path = path;
+  if (impl_->window == nullptr || impl_->shutting_down) {
+    return;
+  }
+
+  impl_->cancellation.cancel();
+  impl_->cancellation = core::CancellationSource{};
+
+  const core::CancellationToken cancellation =
+      impl_->cancellation.token();
+  const std::shared_ptr<core::LoadGeneration> generation_state =
+      impl_->generation;
+  const std::uint64_t generation = generation_state->begin();
+  const std::uint64_t instance_token = impl_->instance_token;
+  const HWND target = impl_->window;
+
+  const bool submitted = impl_->executor.submit(
+      core::Priority::current_image,
+      [target, instance_token, generation, generation_state, cancellation,
+       path] {
+        if (cancellation.is_cancelled() ||
+            !generation_state->is_current(generation)) {
+          return;
+        }
+
+        const platform::WicDecoder decoder;
+        auto decoded = decoder.decode(path, decode_byte_budget);
+        if (cancellation.is_cancelled() ||
+            !generation_state->is_current(generation)) {
+          return;
+        }
+
+        auto payload = std::make_unique<LoadedImage>(LoadedImage{
+            .instance_token = instance_token,
+            .generation = generation,
+            .path = path,
+            .result = std::move(decoded),
+        });
+        if (PostMessageW(target, image_ready_message, 0,
+                         reinterpret_cast<LPARAM>(payload.get()))) {
+          payload.release();
+        }
+      });
+
+  if (!submitted) {
+    impl_->cancellation.cancel();
+    MessageBoxW(impl_->window, L"Unable to schedule image decoding.",
+                window_title, MB_OK | MB_ICONERROR);
+  }
 }
 
 LRESULT CALLBACK MainWindow::window_proc(
@@ -129,7 +235,7 @@ LRESULT MainWindow::handle_message(
 
       std::optional<core::Error> draw_error;
       if (impl_->renderer_ready) {
-        auto draw_result = impl_->renderer.draw(core::ViewTransform{});
+        auto draw_result = impl_->renderer.draw(impl_->transform);
         if (!draw_result.has_value()) {
           draw_error = std::move(draw_result.error());
         }
@@ -139,6 +245,45 @@ LRESULT MainWindow::handle_message(
       if (draw_error.has_value()) {
         impl_->report_renderer_failure(*draw_error);
       }
+      return 0;
+    }
+
+    case image_ready_message: {
+      std::unique_ptr<LoadedImage> loaded(
+          reinterpret_cast<LoadedImage*>(lparam));
+      if (!loaded || loaded->instance_token != impl_->instance_token ||
+          !impl_->generation->is_current(loaded->generation) ||
+          impl_->shutting_down) {
+        return 0;
+      }
+
+      if (!loaded->result.has_value()) {
+        impl_->renderer.clear_image();
+        InvalidateRect(impl_->window, nullptr, FALSE);
+        return 0;
+      }
+
+      const core::ImageFrame& frame = loaded->result.value();
+      auto upload_result = impl_->renderer.set_image(frame);
+      if (!upload_result.has_value()) {
+        impl_->renderer.clear_image();
+        InvalidateRect(impl_->window, nullptr, FALSE);
+        impl_->report_renderer_failure(upload_result.error());
+        return 0;
+      }
+
+      RECT client{};
+      if (GetClientRect(impl_->window, &client)) {
+        const LONG width = client.right - client.left;
+        const LONG height = client.bottom - client.top;
+        if (width > 0 && height > 0) {
+          impl_->transform.fit(
+              {frame.width, frame.height},
+              {static_cast<std::uint32_t>(width),
+               static_cast<std::uint32_t>(height)});
+        }
+      }
+      InvalidateRect(impl_->window, nullptr, FALSE);
       return 0;
     }
 
@@ -155,6 +300,7 @@ LRESULT MainWindow::handle_message(
     }
 
     case WM_DESTROY:
+      impl_->shutdown();
       PostQuitMessage(0);
       return 0;
 
