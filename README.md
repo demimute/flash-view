@@ -63,7 +63,6 @@ supported images in that directory.
 - F: fit to window
 - 1: 1:1 zoom
 - R: rotate view clockwise
-- Esc: close
 
 ## Benchmarking
 
