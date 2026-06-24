@@ -136,6 +136,8 @@ struct MainWindow::Impl {
   core::ViewTransform transform;
   std::shared_ptr<core::ImageFrame> displayed_frame;
   core::SizeU displayed_size{};
+  std::wstring status_text;
+  bool recovering_renderer = false;
   std::optional<PendingLoadDebugInfo> pending_load_debug;
   std::optional<core::DirectoryNavigator> navigator;
   core::ThreeFrameCache frame_cache;
@@ -178,6 +180,11 @@ struct MainWindow::Impl {
     displayed_frame = std::move(frame);
   }
 
+  void set_renderer_status_text(std::wstring text) {
+    status_text = std::move(text);
+    renderer.set_status_text(status_text);
+  }
+
   void fit_displayed_frame() {
     if (displayed_size.width == 0 || displayed_size.height == 0) {
       return;
@@ -203,16 +210,11 @@ struct MainWindow::Impl {
     }
 
     auto upload_result = renderer.set_image(*frame);
-    if (!upload_result.has_value()) {
-      renderer.clear_image();
-      reset_displayed_frame();
-      pending_load_debug.reset();
-      InvalidateRect(window, nullptr, FALSE);
-      report_renderer_failure(upload_result.error());
+    if (!handle_upload_result(upload_result, frame)) {
       return true;
     }
 
-    renderer.set_status_text(L"");
+    set_renderer_status_text(L"");
     pending_load_debug.reset();
     set_displayed_frame(frame);
     fit_displayed_frame();
@@ -414,7 +416,116 @@ struct MainWindow::Impl {
     }
   }
 
+  bool try_recover_renderer() {
+    if (recovering_renderer || window == nullptr) {
+      return false;
+    }
+
+    recovering_renderer = true;
+    auto initialize_result = renderer.initialize(window);
+    recovering_renderer = false;
+    if (!initialize_result.has_value()) {
+      renderer_ready = false;
+      return false;
+    }
+
+    renderer_ready = true;
+    renderer.set_status_text(status_text);
+
+    if (displayed_frame) {
+      auto upload_result = renderer.set_image(*displayed_frame);
+      if (!upload_result.has_value()) {
+        renderer.clear_image();
+        reset_displayed_frame();
+        set_renderer_status_text(L"Renderer reset failed.");
+        InvalidateRect(window, nullptr, FALSE);
+        return false;
+      }
+    }
+
+    InvalidateRect(window, nullptr, FALSE);
+    return true;
+  }
+
+  void show_renderer_reset_failed() {
+    renderer.clear_image();
+    reset_displayed_frame();
+    set_renderer_status_text(L"Renderer reset failed.");
+    InvalidateRect(window, nullptr, FALSE);
+  }
+
+  bool handle_resize_result(unsigned width,
+                            unsigned height,
+                            core::Result<bool>& resize_result) {
+    if (resize_result.has_value()) {
+      return true;
+    }
+    const core::Error error = resize_result.error();
+    if (error.code == core::ErrorCode::render_target_lost &&
+        try_recover_renderer()) {
+      auto retry_result = renderer.resize(width, height);
+      if (retry_result.has_value()) {
+        return true;
+      }
+      if (retry_result.error().code ==
+          core::ErrorCode::render_target_lost) {
+        show_renderer_reset_failed();
+        return false;
+      }
+      report_renderer_failure(retry_result.error());
+      return false;
+    }
+    report_renderer_failure(error);
+    return false;
+  }
+
+  bool handle_upload_result(core::Result<bool>& upload_result,
+                            const std::shared_ptr<core::ImageFrame>& frame) {
+    if (upload_result.has_value()) {
+      return true;
+    }
+    const core::Error error = upload_result.error();
+    if (error.code == core::ErrorCode::render_target_lost &&
+        try_recover_renderer()) {
+      auto retry_result = renderer.set_image(*frame);
+      if (retry_result.has_value()) {
+        return true;
+      }
+      if (retry_result.error().code ==
+          core::ErrorCode::render_target_lost) {
+        show_renderer_reset_failed();
+        return false;
+      }
+      report_renderer_failure(retry_result.error());
+      return false;
+    }
+
+    renderer.clear_image();
+    reset_displayed_frame();
+    pending_load_debug.reset();
+    InvalidateRect(window, nullptr, FALSE);
+    report_renderer_failure(error);
+    return false;
+  }
+
+  void handle_draw_error(const core::Error& error) {
+    if (error.code == core::ErrorCode::render_target_lost &&
+        try_recover_renderer()) {
+      InvalidateRect(window, nullptr, FALSE);
+      return;
+    }
+    report_renderer_failure(error);
+  }
+
   void report_renderer_failure(const core::Error& error) {
+    if (error.code == core::ErrorCode::render_target_lost) {
+      if (try_recover_renderer()) {
+        return;
+      }
+      show_renderer_reset_failed();
+      return;
+    }
+
     renderer_ready = false;
     MessageBoxW(window, error.message.c_str(), window_title,
                 MB_OK | MB_ICONERROR);
@@ -577,9 +688,7 @@ LRESULT MainWindow::handle_message(
       }
 
       auto resize_result = impl_->renderer.resize(width, height);
-      if (!resize_result.has_value()) {
-        impl_->report_renderer_failure(resize_result.error());
-      }
+      impl_->handle_resize_result(width, height, resize_result);
       return 0;
     }
 
@@ -600,7 +709,7 @@ LRESULT MainWindow::handle_message(
 
       EndPaint(impl_->window, &paint);
       if (draw_error.has_value()) {
-        impl_->report_renderer_failure(*draw_error);
+        impl_->handle_draw_error(*draw_error);
         return 0;
       }
       if (draw_succeeded && impl_->pending_load_debug.has_value()) {
@@ -646,7 +755,7 @@ LRESULT MainWindow::handle_message(
         if (loaded->display_when_ready) {
           const core::Error& error = loaded->result.error();
           impl_->renderer.clear_image();
-          impl_->renderer.set_status_text(
+          impl_->set_renderer_status_text(
               L"This image could not be opened.");
           impl_->reset_displayed_frame();
           impl_->pending_load_debug = PendingLoadDebugInfo{
@@ -674,15 +783,11 @@ LRESULT MainWindow::handle_message(
       }
 
       auto upload_result = impl_->renderer.set_image(*frame);
-      if (!upload_result.has_value()) {
-        impl_->renderer.clear_image();
-        impl_->reset_displayed_frame();
-        InvalidateRect(impl_->window, nullptr, FALSE);
-        impl_->report_renderer_failure(upload_result.error());
+      if (!impl_->handle_upload_result(upload_result, frame)) {
         return 0;
       }
 
-      impl_->renderer.set_status_text(L"");
+      impl_->set_renderer_status_text(L"");
       impl_->set_displayed_frame(frame);
       impl_->fit_displayed_frame();
       impl_->pending_load_debug = PendingLoadDebugInfo{

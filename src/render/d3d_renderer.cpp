@@ -178,14 +178,19 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
     return platform_failure(L"Renderer initialization requires a window.");
   }
 
+  const std::wstring existing_status_text =
+      impl_ ? impl_->status_text : std::wstring{};
   impl_ = std::make_unique<Impl>();
   impl_->window = window;
+  impl_->status_text = existing_status_text;
 
   UINT device_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #if defined(_DEBUG)
   device_flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
+  // Phase 1 recovery rebuilds the same hardware renderer. WARP fallback is
+  // intentionally left for Phase 5 so target-loss recovery stays scoped.
   HRESULT result = create_d3d_device(
       device_flags, impl_->d3d_device.ReleaseAndGetAddressOf(),
       impl_->d3d_context.ReleaseAndGetAddressOf());

@@ -327,4 +327,99 @@ TEST(AsyncLoadContractTest, PaintKeepsPendingMetricsWhenDrawDoesNotPresent) {
             std::string::npos);
 }
 
+TEST(AsyncLoadContractTest, RenderTargetLossAttemptsRecoveryWithoutQuit) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("bool recovering_renderer = false"), std::string::npos);
+  EXPECT_NE(source.find("bool try_recover_renderer()"), std::string::npos);
+  EXPECT_NE(source.find("error.code == core::ErrorCode::render_target_lost"),
+            std::string::npos);
+
+  const std::size_t recovery = source.find("bool try_recover_renderer()");
+  ASSERT_NE(recovery, std::string::npos);
+  const std::size_t report = source.find("void report_renderer_failure(",
+                                         recovery);
+  ASSERT_NE(report, std::string::npos);
+  const std::string recovery_block = source.substr(recovery, report - recovery);
+
+  EXPECT_NE(recovery_block.find("renderer.initialize(window)"),
+            std::string::npos);
+  EXPECT_NE(recovery_block.find("renderer.set_image(*displayed_frame)"),
+            std::string::npos);
+  EXPECT_NE(recovery_block.find("renderer.set_status_text("),
+            std::string::npos);
+  EXPECT_NE(recovery_block.find("InvalidateRect(window, nullptr, FALSE)"),
+            std::string::npos);
+  EXPECT_EQ(recovery_block.find("PostQuitMessage"), std::string::npos);
+  EXPECT_EQ(recovery_block.find("MessageBox"), std::string::npos);
+
+  const std::size_t reset_failed =
+      source.find("void show_renderer_reset_failed()", recovery);
+  ASSERT_NE(reset_failed, std::string::npos);
+  const std::string reset_failed_block =
+      source.substr(reset_failed, report - reset_failed);
+  EXPECT_NE(reset_failed_block.find("renderer.clear_image()"),
+            std::string::npos);
+  EXPECT_NE(reset_failed_block.find("set_renderer_status_text("),
+            std::string::npos);
+  EXPECT_NE(reset_failed_block.find("Renderer reset failed."),
+            std::string::npos);
+
+  const std::size_t report_end =
+      source.find("void discard_pending_completions()", report);
+  ASSERT_NE(report_end, std::string::npos);
+  const std::string report_block = source.substr(report, report_end - report);
+
+  EXPECT_NE(report_block.find("try_recover_renderer()"), std::string::npos);
+  EXPECT_NE(report_block.find("show_renderer_reset_failed()"),
+            std::string::npos);
+
+  const std::size_t lost_branch =
+      report_block.find("error.code == core::ErrorCode::render_target_lost");
+  ASSERT_NE(lost_branch, std::string::npos);
+  const std::size_t fatal_branch =
+      report_block.find("renderer_ready = false", lost_branch);
+  ASSERT_NE(fatal_branch, std::string::npos);
+  const std::string lost_block =
+      report_block.substr(lost_branch, fatal_branch - lost_branch);
+  EXPECT_EQ(lost_block.find("PostQuitMessage"), std::string::npos);
+  EXPECT_EQ(lost_block.find("MessageBox"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, RenderTargetLossCallSitesRetryOrInvalidate) {
+  const std::string source = main_window_source();
+
+  EXPECT_NE(source.find("handle_resize_result(width, height, resize_result)"),
+            std::string::npos);
+  EXPECT_NE(source.find("handle_upload_result(upload_result, frame)"),
+            std::string::npos);
+  EXPECT_NE(source.find("handle_draw_error(*draw_error)"), std::string::npos);
+
+  const std::size_t resize = source.find("bool handle_resize_result(");
+  ASSERT_NE(resize, std::string::npos);
+  const std::size_t upload = source.find("bool handle_upload_result(", resize);
+  ASSERT_NE(upload, std::string::npos);
+  const std::string resize_block = source.substr(resize, upload - resize);
+  EXPECT_NE(resize_block.find("try_recover_renderer()"), std::string::npos);
+  EXPECT_NE(resize_block.find("renderer.resize(width, height)"),
+            std::string::npos);
+
+  const std::size_t draw = source.find("void handle_draw_error(", upload);
+  ASSERT_NE(draw, std::string::npos);
+  const std::string upload_block = source.substr(upload, draw - upload);
+  EXPECT_NE(upload_block.find("try_recover_renderer()"), std::string::npos);
+  EXPECT_NE(upload_block.find("renderer.set_image(*frame)"),
+            std::string::npos);
+
+  const std::size_t report = source.find("void report_renderer_failure(",
+                                         draw);
+  ASSERT_NE(report, std::string::npos);
+  const std::string draw_block = source.substr(draw, report - draw);
+  EXPECT_NE(draw_block.find("try_recover_renderer()"), std::string::npos);
+  EXPECT_NE(draw_block.find("InvalidateRect(window, nullptr, FALSE)"),
+            std::string::npos);
+  EXPECT_EQ(draw_block.find("PostQuitMessage"), std::string::npos);
+  EXPECT_EQ(draw_block.find("MessageBox"), std::string::npos);
+}
+
 }  // namespace

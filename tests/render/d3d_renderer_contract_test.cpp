@@ -79,6 +79,19 @@ TEST(D3dRendererContractTest, StatusTextUsesDirectWriteWhenNoImage) {
             std::string::npos);
 }
 
+TEST(D3dRendererContractTest, ReinitializePreservesStatusAndClearsLostState) {
+  const std::string source = renderer_source();
+
+  EXPECT_NE(source.find("const std::wstring existing_status_text"),
+            std::string::npos);
+  EXPECT_NE(source.find("impl_->status_text = existing_status_text"),
+            std::string::npos);
+  EXPECT_NE(source.find("impl_->lost = false"), std::string::npos);
+  EXPECT_NE(source.find("Phase 1 recovery rebuilds the same hardware"),
+            std::string::npos);
+  EXPECT_EQ(source.find("D3D_DRIVER_TYPE_WARP"), std::string::npos);
+}
+
 TEST(D3dRendererContractTest, OccludedPresentReportsNoActualPresent) {
   const std::string source = renderer_source();
 
