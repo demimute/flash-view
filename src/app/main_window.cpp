@@ -18,6 +18,7 @@
 #include "viewer/core/async_shutdown.h"
 #include "viewer/core/cancellation.h"
 #include "viewer/core/directory_navigator.h"
+#include "viewer/core/format_probe.h"
 #include "viewer/core/image_frame.h"
 #include "viewer/core/load_generation.h"
 #include "viewer/core/load_metrics.h"
@@ -34,6 +35,7 @@ namespace {
 constexpr wchar_t window_class_name[] = L"FastImageViewer.MainWindow";
 constexpr wchar_t window_title[] = L"Fast Image Viewer";
 constexpr UINT image_ready_message = WM_APP + 1;
+constexpr UINT navigator_ready_message = WM_APP + 2;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
 
@@ -57,6 +59,13 @@ struct LoadedImage {
   core::Result<core::ImageFrame> result;
 };
 
+struct LoadedNavigator {
+  std::uint64_t instance_token;
+  std::uint64_t generation;
+  std::filesystem::path selected_path;
+  core::Result<core::DirectoryNavigator> result;
+};
+
 struct PendingLoadDebugInfo {
   std::filesystem::path path;
   core::LoadMetrics metrics;
@@ -70,6 +79,7 @@ struct AsyncLoadContext {
         completions(nullptr, instance_token, false) {}
 
   core::LoadGeneration generation;
+  core::LoadGeneration scan_generation;
   core::CancellationSource cancellation;
   core::PriorityExecutor executor;
   core::CompletionGate<HWND, std::uint64_t> completions;
@@ -254,9 +264,17 @@ struct MainWindow::Impl {
             return;
           }
 
-          const platform::WicDecoder decoder;
           metrics.decode_started = core::LoadMetrics::Clock::now();
-          auto decoded = decoder.decode(path, decode_byte_budget);
+          auto decoded = [&path] {
+            auto format = core::probe_file_header(path);
+            if (!format.has_value()) {
+              return core::Result<core::ImageFrame>::failure(
+                  std::move(format).error());
+            }
+
+            const platform::WicDecoder decoder;
+            return decoder.decode(path, decode_byte_budget);
+          }();
           metrics.decode_finished = core::LoadMetrics::Clock::now();
           if (cancellation.is_cancelled()) {
             return;
@@ -296,6 +314,52 @@ struct MainWindow::Impl {
         prefetches.finish(path);
       }
     }
+  }
+
+  void request_directory_scan(const std::filesystem::path& path) {
+    const std::shared_ptr<AsyncLoadContext> context = async_load;
+    if (window == nullptr || !context) {
+      return;
+    }
+
+    const std::uint64_t generation = context->scan_generation.begin();
+    const core::CancellationToken cancellation =
+        context->cancellation.token();
+    const std::uint64_t token = instance_token;
+
+    static_cast<void>(context->executor.submit(
+        core::Priority::background,
+        [context, token, generation, cancellation, path] mutable {
+          if (cancellation.is_cancelled() ||
+              !context->scan_generation.is_current(generation)) {
+            return;
+          }
+
+          auto navigator = core::DirectoryNavigator::scan(path);
+          if (cancellation.is_cancelled() ||
+              !context->scan_generation.is_current(generation)) {
+            return;
+          }
+
+          auto payload = std::make_unique<LoadedNavigator>(
+              LoadedNavigator{
+                  .instance_token = token,
+                  .generation = generation,
+                  .selected_path = path,
+                  .result = std::move(navigator),
+              });
+          static_cast<void>(context->completions.publish(
+              payload,
+              [](HWND target, std::uint64_t gate_token,
+                 LoadedNavigator* loaded) {
+                if (loaded->instance_token != gate_token) {
+                  return false;
+                }
+                return PostMessageW(
+                           target, navigator_ready_message, 0,
+                           reinterpret_cast<LPARAM>(loaded)) != FALSE;
+              }));
+        }));
   }
 
   void prefetch_neighbors() {
@@ -366,6 +430,10 @@ struct MainWindow::Impl {
     while (PeekMessageW(&message, window, image_ready_message,
                         image_ready_message, PM_REMOVE)) {
       delete reinterpret_cast<LoadedImage*>(message.lParam);
+    }
+    while (PeekMessageW(&message, window, navigator_ready_message,
+                        navigator_ready_message, PM_REMOVE)) {
+      delete reinterpret_cast<LoadedNavigator*>(message.lParam);
     }
   }
 
@@ -464,13 +532,8 @@ void MainWindow::open_path(const std::filesystem::path& path) {
   impl_->prefetches.clear();
   impl_->navigator.reset();
 
-  auto navigator = core::DirectoryNavigator::scan(path);
-  if (navigator.has_value()) {
-    impl_->navigator = std::move(navigator).value();
-    impl_->show_current_or_request();
-  } else {
-    impl_->request_image(path, core::Priority::current_image, true);
-  }
+  impl_->request_image(path, core::Priority::current_image, true);
+  impl_->request_directory_scan(path);
 }
 
 LRESULT CALLBACK MainWindow::window_proc(
@@ -628,6 +691,33 @@ LRESULT MainWindow::handle_message(
           .success = true,
       };
       InvalidateRect(impl_->window, nullptr, FALSE);
+      impl_->prefetch_neighbors();
+      return 0;
+    }
+
+    case navigator_ready_message: {
+      std::unique_ptr<LoadedNavigator> loaded(
+          reinterpret_cast<LoadedNavigator*>(lparam));
+      const std::shared_ptr<AsyncLoadContext> context =
+          impl_->async_load;
+      if (!loaded || loaded->instance_token != impl_->instance_token ||
+          !context ||
+          !context->scan_generation.is_current(loaded->generation)) {
+        return 0;
+      }
+
+      if (!loaded->result.has_value()) {
+        return 0;
+      }
+
+      core::DirectoryNavigator navigator =
+          std::move(loaded->result).value();
+      if (!core::paths_match(navigator.current(), loaded->selected_path)) {
+        return 0;
+      }
+
+      impl_->navigator = std::move(navigator);
+      impl_->retain_relevant_frames();
       impl_->prefetch_neighbors();
       return 0;
     }

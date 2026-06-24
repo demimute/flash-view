@@ -69,8 +69,67 @@ TEST(AsyncLoadContractTest, MainWindowKeepsDirectoryNavigatorInImpl) {
 
   EXPECT_NE(source.find("std::optional<core::DirectoryNavigator> navigator"),
             std::string::npos);
-  EXPECT_NE(source.find("core::DirectoryNavigator::scan(path)"),
+}
+
+TEST(AsyncLoadContractTest, DirectoryScanRunsOnWorkerNotOpenPath) {
+  const std::string source = main_window_source();
+
+  const std::size_t open_path = source.find("void MainWindow::open_path(");
+  ASSERT_NE(open_path, std::string::npos);
+  const std::size_t window_proc =
+      source.find("LRESULT CALLBACK MainWindow::window_proc", open_path);
+  ASSERT_NE(window_proc, std::string::npos);
+  const std::string open_path_block =
+      source.substr(open_path, window_proc - open_path);
+  EXPECT_EQ(open_path_block.find("DirectoryNavigator::scan"),
             std::string::npos);
+  EXPECT_NE(open_path_block.find("request_image(path, "
+                                 "core::Priority::current_image, true)"),
+            std::string::npos);
+  EXPECT_NE(open_path_block.find("request_directory_scan(path)"),
+            std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, DirectoryScanPublishesNavigatorReadyMessage) {
+  const std::string source = main_window_source();
+
+  const std::size_t request_scan =
+      source.find("void request_directory_scan(");
+  ASSERT_NE(request_scan, std::string::npos);
+  const std::size_t prefetch_neighbors =
+      source.find("void prefetch_neighbors()", request_scan);
+  ASSERT_NE(prefetch_neighbors, std::string::npos);
+  const std::string request_scan_block =
+      source.substr(request_scan, prefetch_neighbors - request_scan);
+
+  EXPECT_NE(source.find("constexpr UINT navigator_ready_message"),
+            std::string::npos);
+  EXPECT_NE(source.find("core::LoadGeneration scan_generation"),
+            std::string::npos);
+  EXPECT_NE(request_scan_block.find("context->executor.submit"),
+            std::string::npos);
+  EXPECT_NE(request_scan_block.find("core::DirectoryNavigator::scan(path)"),
+            std::string::npos);
+  EXPECT_NE(request_scan_block.find("navigator_ready_message"),
+            std::string::npos);
+  EXPECT_NE(request_scan_block.find("PostMessageW"), std::string::npos);
+  EXPECT_EQ(request_scan_block.find("[this"), std::string::npos);
+  EXPECT_EQ(request_scan_block.find("[impl"), std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, ShutdownDiscardsImageAndNavigatorPayloads) {
+  const std::string source = main_window_source();
+
+  const std::size_t discard = source.find("void discard_pending_completions()");
+  ASSERT_NE(discard, std::string::npos);
+  const std::size_t shutdown = source.find("void shutdown_async()", discard);
+  ASSERT_NE(shutdown, std::string::npos);
+  const std::string discard_block = source.substr(discard, shutdown - discard);
+
+  EXPECT_NE(discard_block.find("image_ready_message"), std::string::npos);
+  EXPECT_NE(discard_block.find("navigator_ready_message"), std::string::npos);
+  EXPECT_NE(discard_block.find("LoadedImage"), std::string::npos);
+  EXPECT_NE(discard_block.find("LoadedNavigator"), std::string::npos);
 }
 
 TEST(AsyncLoadContractTest, MainWindowRequestsDisplayAndPrefetchSeparately) {
