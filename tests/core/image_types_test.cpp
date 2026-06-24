@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <type_traits>
 #include <utility>
@@ -23,13 +24,19 @@ TEST(ErrorCodeTest, DistinguishesLostRenderTargets) {
 }
 
 TEST(LoadRequestTest, StoresPathAndGeneration) {
+#ifdef _WIN32
+  const std::filesystem::path image_path = L"C:\\images\\a.jpg";
+#else
+  const std::filesystem::path image_path = "/images/a.jpg";
+#endif
+
   const LoadRequest request{
-      .path = L"C:\\images\\a.jpg",
+      .path = image_path,
       .generation = 42,
   };
 
   EXPECT_EQ(request.generation, 42U);
-  EXPECT_EQ(request.path.filename(), L"a.jpg");
+  EXPECT_EQ(request.path.filename(), std::filesystem::path{"a.jpg"});
 }
 
 TEST(CancellationTest, SourceCancelsItsToken) {

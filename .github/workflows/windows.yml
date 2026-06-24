@@ -1,0 +1,51 @@
+name: windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: 18a4723aeb7adbbae84bcff0edf510883800f32f
+          path: vcpkg
+
+      - name: Bootstrap vcpkg
+        run: .\vcpkg\bootstrap-vcpkg.bat
+
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\buildtrees
+            ${{ github.workspace }}\vcpkg\packages
+          key: windows-vcpkg-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            windows-vcpkg-
+
+      - name: Configure Debug
+        run: cmake --preset windows-msvc-debug
+
+      - name: Build Debug
+        run: cmake --build --preset windows-msvc-debug
+
+      - name: Test Debug
+        run: ctest --preset windows-msvc-debug --output-on-failure
+
+      - name: Configure Release
+        run: cmake --preset windows-msvc-release
+
+      - name: Build Release smoke
+        run: cmake --build --preset windows-msvc-release
