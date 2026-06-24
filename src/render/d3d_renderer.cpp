@@ -16,6 +16,7 @@
 #include <string>
 #include <utility>
 
+#include "viewer/render/d3d_error_policy.h"
 #include "viewer/render/render_math.h"
 
 namespace viewer::render {
@@ -35,15 +36,43 @@ core::Result<bool> render_target_lost(const wchar_t* message) {
       {core::ErrorCode::render_target_lost, message});
 }
 
+GraphicsOutcome classify_hresult(HRESULT result) noexcept {
+  if (SUCCEEDED(result)) {
+    return GraphicsOutcome::success;
+  }
+  if (result == D2DERR_RECREATE_TARGET) {
+    return GraphicsOutcome::recreate_target;
+  }
+  if (result == DXGI_ERROR_DEVICE_REMOVED ||
+      result == D3DDDIERR_DEVICEREMOVED) {
+    return GraphicsOutcome::device_removed;
+  }
+  if (result == DXGI_ERROR_DEVICE_RESET) {
+    return GraphicsOutcome::device_reset;
+  }
+  if (result == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
+    return GraphicsOutcome::driver_internal_error;
+  }
+  return GraphicsOutcome::other_failure;
+}
+
+GraphicsOutcome classify_present_hresult(HRESULT result) noexcept {
+  if (result == DXGI_STATUS_OCCLUDED) {
+    return GraphicsOutcome::occluded;
+  }
+  return classify_hresult(result);
+}
+
 bool is_device_lost(HRESULT result) noexcept {
-  return result == DXGI_ERROR_DEVICE_REMOVED ||
-         result == DXGI_ERROR_DEVICE_RESET ||
-         result == DXGI_ERROR_DRIVER_INTERNAL_ERROR ||
-         result == D3DDDIERR_DEVICEREMOVED;
+  const GraphicsOutcome outcome = classify_hresult(result);
+  return outcome == GraphicsOutcome::device_removed ||
+         outcome == GraphicsOutcome::device_reset ||
+         outcome == GraphicsOutcome::driver_internal_error;
 }
 
 bool is_render_target_lost(HRESULT result) noexcept {
-  return result == D2DERR_RECREATE_TARGET || is_device_lost(result);
+  return classify_draw_outcome(classify_hresult(result)) ==
+         DrawAction::render_target_lost;
 }
 
 float window_dpi(HWND window) noexcept {
@@ -460,19 +489,23 @@ core::Result<bool> D3dRenderer::draw(
   }
 
   const HRESULT present_result = impl_->swap_chain->Present(1, 0);
-  if (present_result == DXGI_STATUS_OCCLUDED) {
-    return core::Result<bool>::success(false);
+  switch (classify_present_outcome(classify_present_hresult(present_result))) {
+    case PresentAction::presented:
+      return core::Result<bool>::success(true);
+
+    case PresentAction::skipped:
+      return core::Result<bool>::success(false);
+
+    case PresentAction::render_target_lost:
+      impl_->mark_lost();
+      return render_target_lost(
+          L"Direct3D device was removed, reset, or encountered an internal "
+          L"driver error.");
+
+    case PresentAction::platform_error:
+      return platform_failure(L"Swap chain presentation failed.");
   }
-  if (is_device_lost(present_result)) {
-    impl_->mark_lost();
-    return render_target_lost(
-        L"Direct3D device was removed, reset, or encountered an internal "
-        L"driver error.");
-  }
-  if (FAILED(present_result)) {
-    return platform_failure(L"Swap chain presentation failed.");
-  }
-  return core::Result<bool>::success(true);
+  return platform_failure(L"Swap chain presentation failed.");
 }
 
 void D3dRenderer::clear_image() {

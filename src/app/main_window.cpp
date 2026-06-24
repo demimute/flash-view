@@ -14,6 +14,7 @@
 #include <windowsx.h>
 
 #include "viewer/app/input_mapping.h"
+#include "viewer/app/render_failure_policy.h"
 #include "viewer/app/window_state.h"
 #include "viewer/core/async_shutdown.h"
 #include "viewer/core/cancellation.h"
@@ -518,18 +519,24 @@ struct MainWindow::Impl {
   }
 
   void report_renderer_failure(const core::Error& error) {
-    if (error.code == core::ErrorCode::render_target_lost) {
-      if (try_recover_renderer()) {
+    switch (classify_renderer_failure(error)) {
+      case RendererFailureAction::none:
         return;
-      }
-      show_renderer_reset_failed();
-      return;
-    }
 
-    renderer_ready = false;
-    MessageBoxW(window, error.message.c_str(), window_title,
-                MB_OK | MB_ICONERROR);
-    PostQuitMessage(1);
+      case RendererFailureAction::attempt_recovery:
+        if (try_recover_renderer()) {
+          return;
+        }
+        show_renderer_reset_failed();
+        return;
+
+      case RendererFailureAction::fatal:
+        renderer_ready = false;
+        MessageBoxW(window, error.message.c_str(), window_title,
+                    MB_OK | MB_ICONERROR);
+        PostQuitMessage(1);
+        return;
+    }
   }
 
   void discard_pending_completions() noexcept {
@@ -712,7 +719,9 @@ LRESULT MainWindow::handle_message(
         impl_->handle_draw_error(*draw_error);
         return 0;
       }
-      if (draw_succeeded && impl_->pending_load_debug.has_value()) {
+      if (should_flush_pending_load_metrics(
+              draw_succeeded, draw_error.has_value()) &&
+          impl_->pending_load_debug.has_value()) {
         PendingLoadDebugInfo& pending = *impl_->pending_load_debug;
         pending.metrics.presented = core::LoadMetrics::Clock::now();
         output_load_debug_string(pending);
