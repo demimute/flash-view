@@ -10,12 +10,13 @@ jobs:
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}\vcpkg-cache,readwrite
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout vcpkg
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: microsoft/vcpkg
           ref: 18a4723aeb7adbbae84bcff0edf510883800f32f
@@ -24,13 +25,15 @@ jobs:
       - name: Bootstrap vcpkg
         run: .\vcpkg\bootstrap-vcpkg.bat
 
-      - name: Cache vcpkg installed packages
-        uses: actions/cache@v4
+      - name: Cache vcpkg artifacts
+        uses: actions/cache@v6
         with:
           path: |
             ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\downloads
             ${{ github.workspace }}\vcpkg\buildtrees
             ${{ github.workspace }}\vcpkg\packages
+            ${{ github.workspace }}\vcpkg-cache
           key: windows-vcpkg-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             windows-vcpkg-

@@ -18,8 +18,14 @@ lightweight decode error overlay.
 
 ## Build and test on Windows
 
+From a fresh vcpkg checkout, bootstrap vcpkg first. Then set `VCPKG_ROOT`
+before running CMake so the presets can find the vcpkg toolchain file.
+
 ```powershell
+cd C:\src\vcpkg
+.\bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "C:\src\vcpkg"
+cd C:\src\fast-image-viewer
 cmake --preset windows-msvc-debug
 cmake --build --preset windows-msvc-debug
 ctest --preset windows-msvc-debug --output-on-failure
