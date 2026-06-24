@@ -531,7 +531,7 @@ LRESULT MainWindow::handle_message(
         if (!draw_result.has_value()) {
           draw_error = std::move(draw_result.error());
         } else {
-          draw_succeeded = true;
+          draw_succeeded = draw_result.value();
         }
       }
 

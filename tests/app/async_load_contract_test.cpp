@@ -221,7 +221,9 @@ TEST(AsyncLoadContractTest, PaintFlushesPendingMetricsAfterSuccessfulDraw) {
 
   EXPECT_NE(paint_block.find("bool draw_succeeded = false"),
             std::string::npos);
-  EXPECT_NE(paint_block.find("draw_succeeded = true"), std::string::npos);
+  EXPECT_NE(paint_block.find("draw_succeeded = draw_result.value()"),
+            std::string::npos);
+  EXPECT_EQ(paint_block.find("draw_succeeded = true"), std::string::npos);
   EXPECT_NE(paint_block.find("EndPaint"), std::string::npos);
   EXPECT_NE(paint_block.find("pending_load_debug.has_value()"),
             std::string::npos);
@@ -243,6 +245,26 @@ TEST(AsyncLoadContractTest, PaintFlushesPendingMetricsAfterSuccessfulDraw) {
   EXPECT_EQ(error_block.find("pending_load_debug.reset()"),
             std::string::npos);
   EXPECT_EQ(error_block.find("output_load_debug_string"),
+            std::string::npos);
+}
+
+TEST(AsyncLoadContractTest, PaintKeepsPendingMetricsWhenDrawDoesNotPresent) {
+  const std::string source = main_window_source();
+
+  const std::size_t paint = source.find("case WM_PAINT:");
+  ASSERT_NE(paint, std::string::npos);
+  const std::size_t image_ready = source.find("case image_ready_message:",
+                                             paint);
+  ASSERT_NE(image_ready, std::string::npos);
+  const std::string paint_block = source.substr(paint, image_ready - paint);
+
+  EXPECT_NE(paint_block.find("draw_succeeded = draw_result.value()"),
+            std::string::npos);
+  EXPECT_NE(paint_block.find("draw_succeeded && "
+                             "impl_->pending_load_debug.has_value()"),
+            std::string::npos);
+  EXPECT_EQ(paint_block.find("draw_result.has_value() && "
+                             "impl_->pending_load_debug.has_value()"),
             std::string::npos);
 }
 

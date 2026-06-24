@@ -79,5 +79,21 @@ TEST(D3dRendererContractTest, StatusTextUsesDirectWriteWhenNoImage) {
             std::string::npos);
 }
 
+TEST(D3dRendererContractTest, OccludedPresentReportsNoActualPresent) {
+  const std::string source = renderer_source();
+
+  const std::size_t occluded =
+      source.find("present_result == DXGI_STATUS_OCCLUDED");
+  ASSERT_NE(occluded, std::string::npos);
+  const std::size_t device_lost = source.find("is_device_lost(present_result)",
+                                             occluded);
+  ASSERT_NE(device_lost, std::string::npos);
+  const std::string occluded_block =
+      source.substr(occluded, device_lost - occluded);
+
+  EXPECT_NE(occluded_block.find("core::Result<bool>::success(false)"),
+            std::string::npos);
+}
+
 }  // namespace
 }  // namespace viewer::render
