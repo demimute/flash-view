@@ -34,6 +34,16 @@ TEST(InputMappingTest, LeavesUnknownKeysUnhandled) {
   EXPECT_EQ(classify_key(0xFFFFU), KeyAction::none);
 }
 
+TEST(InputMappingTest, MapsThumbnailKeys) {
+  EXPECT_EQ(classify_key('T'), KeyAction::toggle_thumbnails);
+  EXPECT_EQ(classify_key('t'), KeyAction::toggle_thumbnails);
+  EXPECT_EQ(classify_key('D'), KeyAction::cycle_thumbnail_dock);
+  EXPECT_EQ(classify_key('P'), KeyAction::toggle_thumbnail_preview);
+  EXPECT_EQ(classify_key('+'), KeyAction::grow_thumbnails);
+  EXPECT_EQ(classify_key('='), KeyAction::grow_thumbnails);
+  EXPECT_EQ(classify_key('-'), KeyAction::shrink_thumbnails);
+}
+
 TEST(InputMappingTest, WheelAccumulatorConvertsFullDeltasToSteps) {
   WheelDeltaAccumulator wheel;
 

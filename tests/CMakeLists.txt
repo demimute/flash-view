@@ -13,6 +13,7 @@ add_executable(viewer_tests
   core/priority_executor_test.cpp
   core/smoke_test.cpp
   core/three_frame_cache_test.cpp
+  core/thumbnail_layout_test.cpp
   core/view_transform_test.cpp
   render/d3d_error_policy_test.cpp
   render/render_math_test.cpp

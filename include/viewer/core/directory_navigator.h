@@ -29,6 +29,8 @@ class DirectoryNavigator {
 
   [[nodiscard]] const std::filesystem::path& previous() noexcept;
   [[nodiscard]] const std::filesystem::path& next() noexcept;
+  [[nodiscard]] const std::filesystem::path& select(
+      std::size_t index) noexcept;
 
  private:
   DirectoryNavigator(std::vector<std::filesystem::path> items,

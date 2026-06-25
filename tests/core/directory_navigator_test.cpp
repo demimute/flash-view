@@ -123,6 +123,24 @@ TEST(DirectoryNavigatorTest, PreviousAndNextWrapFromUpdatedPosition) {
   EXPECT_EQ(navigator.current_index(), 0U);
 }
 
+TEST(DirectoryNavigatorTest, SelectChangesCurrentIndexWhenInRange) {
+  UniqueTempDirectory directory;
+  write_bytes(directory.path() / "1.png", png_magic);
+  write_bytes(directory.path() / "2.png", png_magic);
+  write_bytes(directory.path() / "3.png", png_magic);
+
+  auto result = DirectoryNavigator::scan(directory.path() / "1.png");
+
+  ASSERT_TRUE(result.has_value());
+  auto navigator = std::move(result).value();
+  const auto& selected = navigator.select(2);
+  EXPECT_EQ(navigator.current_index(), 2U);
+  EXPECT_EQ(selected.filename(), "3.png");
+
+  static_cast<void>(navigator.select(100));
+  EXPECT_EQ(navigator.current_index(), 2U);
+}
+
 TEST(DirectoryNavigatorTest, PrefersExactRealPathOverEquivalentAlias) {
   UniqueTempDirectory directory;
   const auto image = directory.path() / "2.png";

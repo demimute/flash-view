@@ -66,6 +66,55 @@ TEST(FormatProbeTest, DetectsBmpSignature) {
   EXPECT_EQ(probe_format(bytes), ImageFormat::bmp);
 }
 
+TEST(FormatProbeTest, DetectsGifSignature) {
+  constexpr std::array bytes{
+      std::byte{'G'}, std::byte{'I'}, std::byte{'F'},
+      std::byte{'8'}, std::byte{'9'}, std::byte{'a'},
+  };
+
+  EXPECT_EQ(probe_format(bytes), ImageFormat::gif);
+}
+
+TEST(FormatProbeTest, DetectsTiffSignatures) {
+  constexpr std::array little{
+      std::byte{'I'}, std::byte{'I'}, std::byte{0x2A}, std::byte{0x00},
+  };
+  constexpr std::array big{
+      std::byte{'M'}, std::byte{'M'}, std::byte{0x00}, std::byte{0x2A},
+  };
+
+  EXPECT_EQ(probe_format(little), ImageFormat::tiff);
+  EXPECT_EQ(probe_format(big), ImageFormat::tiff);
+}
+
+TEST(FormatProbeTest, DetectsWebpSignature) {
+  constexpr std::array bytes{
+      std::byte{'R'}, std::byte{'I'}, std::byte{'F'}, std::byte{'F'},
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+      std::byte{'W'}, std::byte{'E'}, std::byte{'B'}, std::byte{'P'},
+  };
+
+  EXPECT_EQ(probe_format(bytes), ImageFormat::webp);
+}
+
+TEST(FormatProbeTest, DetectsArchiveSignatures) {
+  constexpr std::array zip{
+      std::byte{'P'}, std::byte{'K'}, std::byte{0x03}, std::byte{0x04},
+  };
+  constexpr std::array seven_zip{
+      std::byte{'7'}, std::byte{'z'}, std::byte{0xBC}, std::byte{0xAF},
+      std::byte{0x27}, std::byte{0x1C},
+  };
+  constexpr std::array rar{
+      std::byte{'R'}, std::byte{'a'}, std::byte{'r'}, std::byte{'!'},
+      std::byte{0x1A}, std::byte{0x07}, std::byte{0x00},
+  };
+
+  EXPECT_EQ(probe_format(zip), ImageFormat::zip_archive);
+  EXPECT_EQ(probe_format(seven_zip), ImageFormat::seven_zip_archive);
+  EXPECT_EQ(probe_format(rar), ImageFormat::rar_archive);
+}
+
 TEST(FormatProbeTest, ReturnsUnknownForEmptyInput) {
   EXPECT_EQ(probe_format(std::span<const std::byte>{}),
             ImageFormat::unknown);
@@ -211,6 +260,20 @@ TEST(FormatProbeTest, ProbeFileHeaderReportsIoErrorForMissingFile) {
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, ErrorCode::io_error);
+}
+
+TEST(FormatProbeTest, ClassifiesSupportedExtensions) {
+  EXPECT_TRUE(is_supported_image_extension("sample.webp"));
+  EXPECT_TRUE(is_supported_image_extension("sample.GIF"));
+  EXPECT_TRUE(is_supported_image_extension("sample.tiff"));
+  EXPECT_TRUE(is_supported_image_extension("sample.heic"));
+  EXPECT_TRUE(is_supported_image_extension("sample.avif"));
+  EXPECT_TRUE(is_supported_archive_extension("book.cbz"));
+  EXPECT_TRUE(is_supported_archive_extension("book.zip"));
+  EXPECT_TRUE(is_supported_archive_extension("book.7z"));
+  EXPECT_TRUE(is_supported_archive_extension("book.rar"));
+  EXPECT_FALSE(is_supported_image_extension("notes.txt"));
+  EXPECT_FALSE(is_supported_archive_extension("notes.txt"));
 }
 
 }  // namespace

@@ -14,7 +14,12 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
 
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
 $progId = "FlashView.Image"
-$extensions = @(".jpg", ".jpeg", ".png", ".bmp")
+$extensions = @(
+  ".jpg", ".jpeg", ".png", ".bmp",
+  ".gif", ".tif", ".tiff", ".ico", ".webp",
+  ".heic", ".heif", ".avif", ".jxl",
+  ".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"
+)
 
 New-Item -Force -Path "HKCU:\Software\Classes\$progId" | Out-Null
 Set-Item -Path "HKCU:\Software\Classes\$progId" -Value "FlashView image"

@@ -1,18 +1,23 @@
 #include "app/main_window.h"
 
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cwctype>
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <commdlg.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -26,9 +31,11 @@
 #include "viewer/core/image_frame.h"
 #include "viewer/core/load_generation.h"
 #include "viewer/core/load_metrics.h"
+#include "viewer/core/natural_sort.h"
 #include "viewer/core/priority_executor.h"
 #include "viewer/core/result.h"
 #include "viewer/core/three_frame_cache.h"
+#include "viewer/core/thumbnail_layout.h"
 #include "viewer/core/view_transform.h"
 #include "viewer/platform/wic_decoder.h"
 #include "viewer/render/d3d_renderer.h"
@@ -42,6 +49,9 @@ constexpr wchar_t empty_prompt[] =
     L"Drop image here or press O to open.";
 constexpr UINT image_ready_message = WM_APP + 1;
 constexpr UINT navigator_ready_message = WM_APP + 2;
+constexpr UINT_PTR toolbar_first_id = 3000;
+constexpr UINT_PTR thumb_list_id = 3100;
+constexpr UINT_PTR preview_box_id = 3101;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
 
@@ -95,6 +105,25 @@ struct ShutdownPayload {
   std::shared_ptr<AsyncLoadContext> context;
 };
 
+struct ToolbarButton {
+  UINT_PTR id;
+  const wchar_t* label;
+};
+
+constexpr std::array toolbar_buttons{
+    ToolbarButton{toolbar_first_id + 0, L"O"},
+    ToolbarButton{toolbar_first_id + 1, L"‹"},
+    ToolbarButton{toolbar_first_id + 2, L"›"},
+    ToolbarButton{toolbar_first_id + 3, L"⌖"},
+    ToolbarButton{toolbar_first_id + 4, L"1"},
+    ToolbarButton{toolbar_first_id + 5, L"↻"},
+    ToolbarButton{toolbar_first_id + 6, L"▦"},
+    ToolbarButton{toolbar_first_id + 7, L"↕"},
+    ToolbarButton{toolbar_first_id + 8, L"◫"},
+    ToolbarButton{toolbar_first_id + 9, L"+"},
+    ToolbarButton{toolbar_first_id + 10, L"−"},
+};
+
 void CALLBACK reap_async_load_context(
     PTP_CALLBACK_INSTANCE, void* raw_payload) noexcept {
   std::unique_ptr<ShutdownPayload> payload(
@@ -129,6 +158,27 @@ void output_load_debug_string(const PendingLoadDebugInfo& pending) {
   OutputDebugStringW(message.c_str());
 }
 
+std::wstring single_quote_powershell(std::wstring value) {
+  std::wstring escaped = L"'";
+  for (const wchar_t ch : value) {
+    if (ch == L'\'') {
+      escaped += L"''";
+    } else {
+      escaped += ch;
+    }
+  }
+  escaped += L"'";
+  return escaped;
+}
+
+std::wstring lower_extension(const std::filesystem::path& path) {
+  std::wstring extension = path.extension().wstring();
+  for (wchar_t& ch : extension) {
+    ch = static_cast<wchar_t>(std::towlower(ch));
+  }
+  return extension;
+}
+
 }  // namespace
 
 struct MainWindow::Impl {
@@ -150,6 +200,15 @@ struct MainWindow::Impl {
   core::PrefetchTracker prefetches;
   WheelDeltaAccumulator wheel_delta;
   PanTracker pan;
+  core::ThumbnailLayoutState thumbnail_layout;
+  std::vector<HWND> toolbar;
+  HWND thumbnail_list = nullptr;
+  HWND preview_box = nullptr;
+  bool syncing_thumbnail_selection = false;
+  bool resizing_preview_splitter = false;
+  std::vector<std::filesystem::path> temporary_archive_dirs;
+  std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
+      thumbnail_cache;
 
   [[nodiscard]] std::filesystem::path current_path() const {
     if (navigator.has_value()) {
@@ -199,13 +258,361 @@ struct MainWindow::Impl {
     InvalidateRect(window, nullptr, FALSE);
   }
 
+  void create_child_controls() {
+    if (window == nullptr || !toolbar.empty()) {
+      return;
+    }
+
+    InitCommonControls();
+    for (const ToolbarButton& spec : toolbar_buttons) {
+      HWND button = CreateWindowExW(
+          0, L"BUTTON", spec.label,
+          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+          0, 0, 32, 28, window, reinterpret_cast<HMENU>(spec.id),
+          GetModuleHandleW(nullptr), nullptr);
+      if (button != nullptr) {
+        toolbar.push_back(button);
+      }
+    }
+
+    thumbnail_list = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+        WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_OWNERDRAWFIXED |
+            LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
+        0, 0, 100, 100, window,
+        reinterpret_cast<HMENU>(thumb_list_id), GetModuleHandleW(nullptr),
+        nullptr);
+    preview_box = CreateWindowExW(
+        WS_EX_CLIENTEDGE, L"STATIC", L"Preview",
+        WS_CHILD | SS_OWNERDRAW,
+        0, 0, 100, 100, window,
+        reinterpret_cast<HMENU>(preview_box_id), GetModuleHandleW(nullptr),
+        nullptr);
+    update_child_layout();
+  }
+
+  void update_child_layout() {
+    if (window == nullptr) {
+      return;
+    }
+
+    RECT client{};
+    if (!GetClientRect(window, &client)) {
+      return;
+    }
+
+    constexpr int toolbar_height = 34;
+    constexpr int button_size = 28;
+    constexpr int button_gap = 4;
+    int x = 6;
+    for (HWND button : toolbar) {
+      MoveWindow(button, x, 3, button_size, button_size, TRUE);
+      x += button_size + button_gap;
+    }
+
+    const bool show_thumbs = thumbnail_layout.visible &&
+                             thumbnail_list != nullptr;
+    if (thumbnail_list != nullptr) {
+      ShowWindow(thumbnail_list, show_thumbs ? SW_SHOW : SW_HIDE);
+    }
+    if (preview_box != nullptr) {
+      ShowWindow(preview_box,
+                 show_thumbs && thumbnail_layout.preview_visible ? SW_SHOW
+                                                                 : SW_HIDE);
+    }
+    if (!show_thumbs) {
+      return;
+    }
+
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
+    const int preview = thumbnail_layout.preview_visible
+                            ? static_cast<int>(thumbnail_layout.preview_extent)
+                            : 0;
+    const int splitter = thumbnail_layout.preview_visible ? 6 : 0;
+    RECT list_rect{};
+    RECT preview_rect{};
+
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+        list_rect = {0, height - panel, width - preview - splitter, height};
+        preview_rect = {width - preview, height - panel, width, height};
+        break;
+      case core::ThumbnailDock::top:
+        list_rect = {0, toolbar_height, width - preview - splitter,
+                     toolbar_height + panel};
+        preview_rect = {width - preview, toolbar_height, width,
+                        toolbar_height + panel};
+        break;
+      case core::ThumbnailDock::left:
+        list_rect = {0, toolbar_height, panel,
+                     height - preview - splitter};
+        preview_rect = {0, height - preview, panel, height};
+        break;
+      case core::ThumbnailDock::right:
+        list_rect = {width - panel, toolbar_height, width,
+                     height - preview - splitter};
+        preview_rect = {width - panel, height - preview, width, height};
+        break;
+    }
+
+    MoveWindow(thumbnail_list, list_rect.left, list_rect.top,
+               list_rect.right - list_rect.left,
+               list_rect.bottom - list_rect.top, TRUE);
+    if (preview_box != nullptr && thumbnail_layout.preview_visible) {
+      MoveWindow(preview_box, preview_rect.left, preview_rect.top,
+                 preview_rect.right - preview_rect.left,
+                 preview_rect.bottom - preview_rect.top, TRUE);
+    }
+    SendMessageW(thumbnail_list, LB_SETITEMHEIGHT, 0,
+                 static_cast<LPARAM>(thumbnail_layout.thumbnail_size + 24));
+    InvalidateRect(window, nullptr, FALSE);
+  }
+
+  [[nodiscard]] std::optional<RECT> preview_splitter_rect() const {
+    if (window == nullptr || !thumbnail_layout.visible ||
+        !thumbnail_layout.preview_visible) {
+      return std::nullopt;
+    }
+    RECT client{};
+    if (!GetClientRect(window, &client)) {
+      return std::nullopt;
+    }
+    constexpr int toolbar_height = 34;
+    constexpr int splitter = 6;
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
+    const int preview = static_cast<int>(thumbnail_layout.preview_extent);
+
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+        return RECT{width - preview - splitter, height - panel,
+                    width - preview, height};
+      case core::ThumbnailDock::top:
+        return RECT{width - preview - splitter, toolbar_height,
+                    width - preview, toolbar_height + panel};
+      case core::ThumbnailDock::left:
+        return RECT{0, height - preview - splitter, panel,
+                    height - preview};
+      case core::ThumbnailDock::right:
+        return RECT{width - panel, height - preview - splitter, width,
+                    height - preview};
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] bool begin_preview_resize(Point point) {
+    const auto splitter = preview_splitter_rect();
+    if (!splitter.has_value()) {
+      return false;
+    }
+    POINT native_point{point.x, point.y};
+    if (PtInRect(&*splitter, native_point) == FALSE) {
+      return false;
+    }
+    resizing_preview_splitter = true;
+    SetCapture(window);
+    return true;
+  }
+
+  void resize_preview_to(Point point) {
+    if (!resizing_preview_splitter) {
+      return;
+    }
+    RECT client{};
+    if (!GetClientRect(window, &client)) {
+      return;
+    }
+    constexpr int toolbar_height = 34;
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    if (thumbnail_layout.dock == core::ThumbnailDock::bottom ||
+        thumbnail_layout.dock == core::ThumbnailDock::top) {
+      const int requested = width - point.x;
+      thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
+          std::clamp(requested, 120, std::max(120, width - 160)));
+    } else {
+      const int requested = height - point.y;
+      thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
+          std::clamp(requested, 100,
+                     std::max(100, height - toolbar_height - 120)));
+    }
+    update_child_layout();
+  }
+
+  void refresh_thumbnail_items() {
+    if (thumbnail_list == nullptr) {
+      return;
+    }
+
+    syncing_thumbnail_selection = true;
+    SendMessageW(thumbnail_list, LB_RESETCONTENT, 0, 0);
+    if (navigator.has_value()) {
+      const auto& items = navigator->items();
+      for (const auto& item : items) {
+        const std::wstring label = item.filename().wstring();
+        SendMessageW(thumbnail_list, LB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(label.c_str()));
+      }
+      SendMessageW(thumbnail_list, LB_SETCURSEL,
+                   static_cast<WPARAM>(navigator->current_index()), 0);
+      update_preview_label();
+    } else if (preview_box != nullptr) {
+      SetWindowTextW(preview_box, L"Preview");
+    }
+    syncing_thumbnail_selection = false;
+  }
+
+  [[nodiscard]] std::shared_ptr<core::ImageFrame> thumbnail_frame_for(
+      const std::filesystem::path& path) {
+    const std::wstring key = path.wstring();
+    if (const auto cached = thumbnail_cache.find(key);
+        cached != thumbnail_cache.end()) {
+      return cached->second;
+    }
+
+    if (const auto cached_frame = frame_cache.find(path)) {
+      thumbnail_cache.emplace(key, cached_frame);
+      return cached_frame;
+    }
+
+    const platform::WicDecoder decoder;
+    auto decoded =
+        decoder.decode(path, std::size_t{256} * 1024U * 1024U);
+    if (!decoded.has_value()) {
+      return {};
+    }
+
+    auto frame = std::make_shared<core::ImageFrame>(
+        std::move(decoded).value());
+    thumbnail_cache.emplace(key, frame);
+    return frame;
+  }
+
+  void draw_thumbnail_item(const DRAWITEMSTRUCT& item) {
+    const bool selected =
+        (item.itemState & ODS_SELECTED) == ODS_SELECTED;
+    HBRUSH background = CreateSolidBrush(selected ? RGB(54, 94, 140)
+                                                  : RGB(27, 30, 34));
+    FillRect(item.hDC, &item.rcItem, background);
+    DeleteObject(background);
+
+    RECT thumb = item.rcItem;
+    thumb.left += 8;
+    thumb.top += 6;
+    thumb.right = thumb.left +
+                  static_cast<LONG>(thumbnail_layout.thumbnail_size);
+    thumb.bottom = thumb.top +
+                   static_cast<LONG>(thumbnail_layout.thumbnail_size);
+
+    const std::filesystem::path path =
+        navigator.has_value() && item.itemID < navigator->items().size()
+            ? navigator->items()[item.itemID]
+            : std::filesystem::path{};
+    const auto frame = path.empty() ? nullptr : thumbnail_frame_for(path);
+    if (frame && !frame->pixels.empty()) {
+      BITMAPINFO bitmap_info{};
+      bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bitmap_info.bmiHeader.biWidth = static_cast<LONG>(frame->width);
+      bitmap_info.bmiHeader.biHeight = -static_cast<LONG>(frame->height);
+      bitmap_info.bmiHeader.biPlanes = 1;
+      bitmap_info.bmiHeader.biBitCount = 32;
+      bitmap_info.bmiHeader.biCompression = BI_RGB;
+      StretchDIBits(item.hDC, thumb.left, thumb.top,
+                    thumb.right - thumb.left, thumb.bottom - thumb.top,
+                    0, 0, static_cast<int>(frame->width),
+                    static_cast<int>(frame->height), frame->pixels.data(),
+                    &bitmap_info, DIB_RGB_COLORS, SRCCOPY);
+    } else {
+      HBRUSH thumb_brush = CreateSolidBrush(RGB(48, 52, 58));
+      FillRect(item.hDC, &thumb, thumb_brush);
+      DeleteObject(thumb_brush);
+    }
+    FrameRect(item.hDC, &thumb,
+              reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+
+    wchar_t text[512]{};
+    SendMessageW(item.hwndItem, LB_GETTEXT, item.itemID,
+                 reinterpret_cast<LPARAM>(text));
+    RECT text_rect = item.rcItem;
+    text_rect.left = thumb.right + 10;
+    text_rect.top += 8;
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, selected ? RGB(255, 255, 255)
+                                    : RGB(220, 226, 236));
+    DrawTextW(item.hDC, text, -1, &text_rect,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+  }
+
+  void update_preview_label() {
+    if (preview_box == nullptr) {
+      return;
+    }
+    const std::filesystem::path current = current_path();
+    if (current.empty()) {
+      SetWindowTextW(preview_box, L"Preview");
+      return;
+    }
+    std::wstring text = L"◫\r\n";
+    text += current.filename().wstring();
+    SetWindowTextW(preview_box, text.c_str());
+    InvalidateRect(preview_box, nullptr, TRUE);
+  }
+
+  void draw_preview_item(const DRAWITEMSTRUCT& item) {
+    HBRUSH background = CreateSolidBrush(RGB(21, 23, 26));
+    FillRect(item.hDC, &item.rcItem, background);
+    DeleteObject(background);
+
+    const std::filesystem::path current = current_path();
+    const auto frame = current.empty() ? nullptr : thumbnail_frame_for(current);
+    if (!frame || frame->pixels.empty()) {
+      SetBkMode(item.hDC, TRANSPARENT);
+      SetTextColor(item.hDC, RGB(220, 226, 236));
+      RECT text_rect = item.rcItem;
+      DrawTextW(item.hDC, L"Preview", -1, &text_rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+      return;
+    }
+
+    const int box_width = item.rcItem.right - item.rcItem.left;
+    const int box_height = item.rcItem.bottom - item.rcItem.top;
+    const double scale = std::min(
+        static_cast<double>(box_width) / static_cast<double>(frame->width),
+        static_cast<double>(box_height) / static_cast<double>(frame->height));
+    const int draw_width =
+        std::max(1, static_cast<int>(static_cast<double>(frame->width) *
+                                     scale));
+    const int draw_height =
+        std::max(1, static_cast<int>(static_cast<double>(frame->height) *
+                                     scale));
+    const int draw_x = item.rcItem.left + (box_width - draw_width) / 2;
+    const int draw_y = item.rcItem.top + (box_height - draw_height) / 2;
+
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = static_cast<LONG>(frame->width);
+    bitmap_info.bmiHeader.biHeight = -static_cast<LONG>(frame->height);
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+    StretchDIBits(item.hDC, draw_x, draw_y, draw_width, draw_height, 0, 0,
+                  static_cast<int>(frame->width),
+                  static_cast<int>(frame->height), frame->pixels.data(),
+                  &bitmap_info, DIB_RGB_COLORS, SRCCOPY);
+  }
+
   void open_with_dialog() {
     std::array<wchar_t, 32768> path{};
     OPENFILENAMEW dialog{
         .lStructSize = sizeof(OPENFILENAMEW),
         .hwndOwner = window,
         .lpstrFilter =
-            L"Images (*.jpg;*.jpeg;*.png;*.bmp)\0*.jpg;*.jpeg;*.png;*.bmp\0"
+            L"Images and archives\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.jxl;*.zip;*.cbz;*.rar;*.cbr;*.7z;*.cb7\0"
+            L"Images\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.tif;*.tiff;*.ico;*.webp;*.heic;*.heif;*.avif;*.jxl\0"
+            L"Archives\0*.zip;*.cbz;*.rar;*.cbr;*.7z;*.cb7\0"
             L"All files (*.*)\0*.*\0",
         .lpstrFile = path.data(),
         .nMaxFile = static_cast<DWORD>(path.size()),
@@ -375,6 +782,11 @@ struct MainWindow::Impl {
       return;
     }
 
+    if (core::is_supported_archive_extension(path)) {
+      open_archive(path);
+      return;
+    }
+
     context->cancellation.cancel();
     context->cancellation = core::CancellationSource{};
     prefetches.clear();
@@ -382,6 +794,145 @@ struct MainWindow::Impl {
 
     request_image(path, core::Priority::current_image, true);
     request_directory_scan(path);
+  }
+
+  void open_archive(const std::filesystem::path& path) {
+    const std::wstring extension = lower_extension(path);
+    if (extension != L".zip" && extension != L".cbz") {
+      MessageBoxW(window,
+                  L"This archive type is recognized but needs the 7-Zip/"
+                  L"UnRAR engine in a later build. ZIP and CBZ work now.",
+                  window_title, MB_OK | MB_ICONINFORMATION);
+      return;
+    }
+
+    const auto extracted = extract_zip_archive(path);
+    if (!extracted.has_value()) {
+      MessageBoxW(window, extracted.error().message.c_str(), window_title,
+                  MB_OK | MB_ICONERROR);
+      return;
+    }
+
+    const auto first = find_first_image_recursive(extracted.value());
+    if (!first.has_value()) {
+      MessageBoxW(window,
+                  L"The archive opened, but no supported image was found.",
+                  window_title, MB_OK | MB_ICONINFORMATION);
+      return;
+    }
+
+    open_path(first.value());
+  }
+
+  core::Result<std::filesystem::path> extract_zip_archive(
+      const std::filesystem::path& archive) {
+    wchar_t temp_buffer[MAX_PATH]{};
+    if (GetTempPathW(MAX_PATH, temp_buffer) == 0) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::platform_error,
+           L"Could not find the temporary folder."});
+    }
+
+    const std::filesystem::path destination =
+        std::filesystem::path(temp_buffer) /
+        (std::wstring(L"FlashView-") + std::to_wstring(GetTickCount64()));
+    std::error_code error;
+    std::filesystem::create_directories(destination, error);
+    if (error) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::io_error,
+           L"Could not create the archive extraction folder."});
+    }
+
+    std::filesystem::path zip_path = archive;
+    if (lower_extension(archive) == L".cbz") {
+      zip_path = destination / L"archive.zip";
+      std::filesystem::copy_file(archive, zip_path,
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 error);
+      if (error) {
+        return core::Result<std::filesystem::path>::failure(
+            {core::ErrorCode::io_error,
+             L"Could not prepare the CBZ archive for extraction."});
+      }
+    }
+
+    std::wstring command =
+        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
+        L"\"Expand-Archive -LiteralPath " +
+        single_quote_powershell(zip_path.wstring()) + L" -DestinationPath " +
+        single_quote_powershell(destination.wstring()) + L" -Force\"";
+
+    STARTUPINFOW startup{
+        .cb = sizeof(STARTUPINFOW),
+        .dwFlags = STARTF_USESHOWWINDOW,
+        .wShowWindow = SW_HIDE,
+    };
+    PROCESS_INFORMATION process{};
+    std::vector<wchar_t> command_line(command.begin(), command.end());
+    command_line.push_back(L'\0');
+    if (CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                       &process) == FALSE) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::platform_error,
+           L"Could not start the ZIP extraction helper."});
+    }
+
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+
+    if (exit_code != 0) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::decode_error,
+           L"The ZIP/CBZ archive could not be extracted."});
+    }
+
+    temporary_archive_dirs.push_back(destination);
+    return core::Result<std::filesystem::path>::success(destination);
+  }
+
+  core::Result<std::filesystem::path> find_first_image_recursive(
+      const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> images;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator iterator(root, error);
+    const std::filesystem::recursive_directory_iterator end;
+    if (error) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::io_error,
+           L"Could not read the extracted archive folder."});
+    }
+
+    while (iterator != end) {
+      if (iterator->is_regular_file(error) &&
+          core::is_supported_image_extension(iterator->path())) {
+        images.push_back(iterator->path());
+      }
+      error.clear();
+      iterator.increment(error);
+      if (error) {
+        return core::Result<std::filesystem::path>::failure(
+            {core::ErrorCode::io_error,
+             L"Could not continue reading the extracted archive."});
+      }
+    }
+
+    if (images.empty()) {
+      return core::Result<std::filesystem::path>::failure(
+          {core::ErrorCode::unsupported_format,
+           L"No supported image was found in the archive."});
+    }
+
+    const core::NaturalLess natural_less;
+    std::sort(images.begin(), images.end(),
+              [&natural_less](const auto& lhs, const auto& rhs) {
+                return natural_less(lhs.wstring(), rhs.wstring());
+              });
+    return core::Result<std::filesystem::path>::success(images.front());
   }
 
   void request_directory_scan(const std::filesystem::path& path) {
@@ -465,6 +1016,7 @@ struct MainWindow::Impl {
     }
     static_cast<void>(navigator->previous());
     show_current_or_request();
+    refresh_thumbnail_items();
   }
 
   void navigate_next() {
@@ -473,9 +1025,89 @@ struct MainWindow::Impl {
     }
     static_cast<void>(navigator->next());
     show_current_or_request();
+    refresh_thumbnail_items();
+  }
+
+  void select_thumbnail(std::size_t index) {
+    if (!navigator.has_value()) {
+      return;
+    }
+    static_cast<void>(navigator->select(index));
+    show_current_or_request();
+    update_preview_label();
+  }
+
+  void toggle_thumbnails() {
+    thumbnail_layout.toggle_visible();
+    update_child_layout();
+    refresh_thumbnail_items();
+  }
+
+  void cycle_thumbnail_dock() {
+    thumbnail_layout.cycle_dock();
+    update_child_layout();
+  }
+
+  void toggle_thumbnail_preview() {
+    thumbnail_layout.toggle_preview();
+    update_child_layout();
+  }
+
+  void grow_thumbnails() {
+    thumbnail_layout.grow_thumbnails();
+    update_child_layout();
+  }
+
+  void shrink_thumbnails() {
+    thumbnail_layout.shrink_thumbnails();
+    update_child_layout();
+  }
+
+  void invoke_toolbar(UINT_PTR id) {
+    switch (id - toolbar_first_id) {
+      case 0:
+        open_with_dialog();
+        return;
+      case 1:
+        navigate_previous();
+        return;
+      case 2:
+        navigate_next();
+        return;
+      case 3:
+        fit_displayed_frame();
+        InvalidateRect(window, nullptr, FALSE);
+        return;
+      case 4:
+        transform.one_to_one();
+        InvalidateRect(window, nullptr, FALSE);
+        return;
+      case 5:
+        transform.rotate_clockwise();
+        InvalidateRect(window, nullptr, FALSE);
+        return;
+      case 6:
+        toggle_thumbnails();
+        return;
+      case 7:
+        cycle_thumbnail_dock();
+        return;
+      case 8:
+        toggle_thumbnail_preview();
+        return;
+      case 9:
+        grow_thumbnails();
+        return;
+      case 10:
+        shrink_thumbnails();
+        return;
+      default:
+        return;
+    }
   }
 
   void end_pan() noexcept {
+    resizing_preview_splitter = false;
     pan.end();
     if (GetCapture() == window) {
       ReleaseCapture();
@@ -644,12 +1276,21 @@ struct MainWindow::Impl {
       // process exit. Blocking or throwing from WM_CLOSE would be worse.
     }
   }
+
+  void cleanup_temporary_archives() noexcept {
+    for (const auto& directory : temporary_archive_dirs) {
+      std::error_code error;
+      std::filesystem::remove_all(directory, error);
+    }
+    temporary_archive_dirs.clear();
+  }
 };
 
 MainWindow::MainWindow() : impl_(std::make_unique<Impl>()) {}
 
 MainWindow::~MainWindow() {
   impl_->shutdown_async();
+  impl_->cleanup_temporary_archives();
   if (impl_->window != nullptr && IsWindow(impl_->window)) {
     DestroyWindow(impl_->window);
   }
@@ -697,6 +1338,7 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
     return false;
   }
   impl_->renderer_ready = true;
+  impl_->create_child_controls();
   impl_->show_empty_prompt();
   DragAcceptFiles(window, TRUE);
 
@@ -751,6 +1393,7 @@ LRESULT MainWindow::handle_message(
 
       auto resize_result = impl_->renderer.resize(width, height);
       impl_->handle_resize_result(width, height, resize_result);
+      impl_->update_child_layout();
       return 0;
     }
 
@@ -854,6 +1497,7 @@ LRESULT MainWindow::handle_message(
       impl_->set_renderer_status_text(L"");
       impl_->set_displayed_frame(frame);
       impl_->fit_displayed_frame();
+      impl_->update_preview_label();
       impl_->pending_load_debug = PendingLoadDebugInfo{
           .path = loaded->path,
           .metrics = loaded->metrics,
@@ -888,7 +1532,47 @@ LRESULT MainWindow::handle_message(
       impl_->navigator = std::move(navigator);
       impl_->retain_relevant_frames();
       impl_->prefetch_neighbors();
+      impl_->refresh_thumbnail_items();
       return 0;
+    }
+
+    case WM_COMMAND: {
+      const UINT_PTR id = LOWORD(wparam);
+      const UINT notification = HIWORD(wparam);
+      if (id >= toolbar_first_id &&
+          id < toolbar_first_id + toolbar_buttons.size() &&
+          notification == BN_CLICKED) {
+        impl_->invoke_toolbar(id);
+        return 0;
+      }
+      if (id == thumb_list_id && notification == LBN_SELCHANGE &&
+          !impl_->syncing_thumbnail_selection) {
+        const LRESULT selected =
+            SendMessageW(impl_->thumbnail_list, LB_GETCURSEL, 0, 0);
+        if (selected != LB_ERR) {
+          impl_->select_thumbnail(static_cast<std::size_t>(selected));
+        }
+        return 0;
+      }
+      break;
+    }
+
+    case WM_DRAWITEM: {
+      const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+      if (item == nullptr) {
+        break;
+      }
+      if (item->CtlID == preview_box_id) {
+        impl_->draw_preview_item(*item);
+        return TRUE;
+      }
+      if (item->CtlID != thumb_list_id ||
+          item->itemID == static_cast<UINT>(-1)) {
+        break;
+      }
+
+      impl_->draw_thumbnail_item(*item);
+      return TRUE;
     }
 
     case WM_MOUSEWHEEL: {
@@ -903,12 +1587,21 @@ LRESULT MainWindow::handle_message(
     }
 
     case WM_LBUTTONDOWN:
+      if (impl_->begin_preview_resize(
+              {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+        return 0;
+      }
       impl_->pan.begin(
           {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
       SetCapture(impl_->window);
       return 0;
 
     case WM_MOUSEMOVE:
+      if (impl_->resizing_preview_splitter) {
+        impl_->resize_preview_to(
+            {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+        return 0;
+      }
       if (const std::optional<PanDelta> delta = impl_->pan.move_to(
               {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
           delta.has_value()) {
@@ -956,6 +1649,26 @@ LRESULT MainWindow::handle_message(
           InvalidateRect(impl_->window, nullptr, FALSE);
           return 0;
 
+        case KeyAction::toggle_thumbnails:
+          impl_->toggle_thumbnails();
+          return 0;
+
+        case KeyAction::cycle_thumbnail_dock:
+          impl_->cycle_thumbnail_dock();
+          return 0;
+
+        case KeyAction::toggle_thumbnail_preview:
+          impl_->toggle_thumbnail_preview();
+          return 0;
+
+        case KeyAction::grow_thumbnails:
+          impl_->grow_thumbnails();
+          return 0;
+
+        case KeyAction::shrink_thumbnails:
+          impl_->shrink_thumbnails();
+          return 0;
+
         case KeyAction::none:
           break;
       }
@@ -971,6 +1684,7 @@ LRESULT MainWindow::handle_message(
     case WM_CLOSE:
       impl_->end_pan();
       impl_->shutdown_async();
+      impl_->cleanup_temporary_archives();
       DestroyWindow(impl_->window);
       return 0;
 

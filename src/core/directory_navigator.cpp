@@ -1,6 +1,7 @@
 #include "viewer/core/directory_navigator.h"
 
 #include <algorithm>
+#include <cwctype>
 #include <system_error>
 #include <utility>
 
@@ -29,6 +30,16 @@ namespace {
   };
 }
 
+[[nodiscard]] bool has_deferred_codec_extension(
+    const std::filesystem::path& path) {
+  std::wstring extension = path.extension().wstring();
+  for (wchar_t& ch : extension) {
+    ch = static_cast<wchar_t>(std::towlower(ch));
+  }
+  return extension == L".heic" || extension == L".heif" ||
+         extension == L".avif" || extension == L".jxl";
+}
+
 }  // namespace
 
 Result<DirectoryNavigator> DirectoryNavigator::scan(
@@ -42,12 +53,15 @@ Result<DirectoryNavigator> DirectoryNavigator::scan(
 
   const auto selected_format = probe_file_header(selected);
   if (!selected_format.has_value()) {
-    if (selected_format.error().code == ErrorCode::unsupported_format) {
+    if (selected_format.error().code == ErrorCode::unsupported_format &&
+        !has_deferred_codec_extension(selected)) {
       return Result<DirectoryNavigator>::failure(
           unsupported_format(L"Selected file is not a supported image"));
     }
-    return Result<DirectoryNavigator>::failure(
-        io_error(L"Could not read the selected image"));
+    if (selected_format.error().code != ErrorCode::unsupported_format) {
+      return Result<DirectoryNavigator>::failure(
+          io_error(L"Could not read the selected image"));
+    }
   }
 
   auto directory = selected.parent_path();
@@ -73,7 +87,11 @@ Result<DirectoryNavigator> DirectoryNavigator::scan(
 
     if (is_regular_file) {
       const auto format = probe_file_header(entry.path());
-      if (format.has_value()) {
+      if ((format.has_value() &&
+           is_supported_image_format(format.value())) ||
+          (!format.has_value() &&
+           format.error().code == ErrorCode::unsupported_format &&
+           has_deferred_codec_extension(entry.path()))) {
         items.push_back(entry.path());
       }
     }
@@ -149,6 +167,14 @@ const std::filesystem::path& DirectoryNavigator::next() noexcept {
   ++current_index_;
   if (current_index_ == items_.size()) {
     current_index_ = 0;
+  }
+  return current();
+}
+
+const std::filesystem::path& DirectoryNavigator::select(
+    std::size_t index) noexcept {
+  if (index < items_.size()) {
+    current_index_ = index;
   }
   return current();
 }

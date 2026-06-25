@@ -21,6 +21,11 @@ enum class KeyAction {
   fit,
   one_to_one,
   rotate_clockwise,
+  toggle_thumbnails,
+  cycle_thumbnail_dock,
+  toggle_thumbnail_preview,
+  grow_thumbnails,
+  shrink_thumbnails,
 };
 
 [[nodiscard]] constexpr KeyAction classify_key(unsigned key) noexcept {
@@ -50,6 +55,26 @@ enum class KeyAction {
     case 'R':
     case 'r':
       return KeyAction::rotate_clockwise;
+
+    case 'T':
+    case 't':
+      return KeyAction::toggle_thumbnails;
+
+    case 'D':
+    case 'd':
+      return KeyAction::cycle_thumbnail_dock;
+
+    case 'P':
+    case 'p':
+      return KeyAction::toggle_thumbnail_preview;
+
+    case '+':
+    case '=':
+      return KeyAction::grow_thumbnails;
+
+    case '-':
+    case '_':
+      return KeyAction::shrink_thumbnails;
 
     default:
       return KeyAction::none;
