@@ -8,6 +8,8 @@
 namespace viewer::app {
 namespace {
 
+constexpr wchar_t startup_error_title[] = L"FlashView";
+
 class ComApartment {
  public:
   ComApartment() noexcept
@@ -40,11 +42,17 @@ int run(HINSTANCE instance, int show_command) {
 
   const ComApartment com_apartment;
   if (!com_apartment.is_usable()) {
+    MessageBoxW(nullptr, L"Unable to initialize COM.", startup_error_title,
+                MB_OK | MB_ICONERROR);
     return 1;
   }
 
   MainWindow window;
   if (!window.create(instance, show_command)) {
+    MessageBoxW(
+        nullptr,
+        L"Unable to start FlashView. Direct3D/Direct2D initialization failed.",
+        startup_error_title, MB_OK | MB_ICONERROR);
     return 1;
   }
 
