@@ -432,12 +432,12 @@ struct MainWindow::Impl {
         thumbnail_layout.dock == core::ThumbnailDock::top) {
       const int requested = width - point.x;
       thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
-          std::clamp(requested, 120, std::max(120, width - 160)));
+          (std::clamp)(requested, 120, (std::max)(120, width - 160)));
     } else {
       const int requested = height - point.y;
       thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
-          std::clamp(requested, 100,
-                     std::max(100, height - toolbar_height - 120)));
+          (std::clamp)(requested, 100,
+                       (std::max)(100, height - toolbar_height - 120)));
     }
     update_child_layout();
   }
@@ -579,15 +579,15 @@ struct MainWindow::Impl {
 
     const int box_width = item.rcItem.right - item.rcItem.left;
     const int box_height = item.rcItem.bottom - item.rcItem.top;
-    const double scale = std::min(
+    const double scale = (std::min)(
         static_cast<double>(box_width) / static_cast<double>(frame->width),
         static_cast<double>(box_height) / static_cast<double>(frame->height));
     const int draw_width =
-        std::max(1, static_cast<int>(static_cast<double>(frame->width) *
-                                     scale));
+        (std::max)(1, static_cast<int>(static_cast<double>(frame->width) *
+                                       scale));
     const int draw_height =
-        std::max(1, static_cast<int>(static_cast<double>(frame->height) *
-                                     scale));
+        (std::max)(1, static_cast<int>(static_cast<double>(frame->height) *
+                                       scale));
     const int draw_x = item.rcItem.left + (box_width - draw_width) / 2;
     const int draw_y = item.rcItem.top + (box_height - draw_height) / 2;
 
@@ -725,7 +725,7 @@ struct MainWindow::Impl {
           }
 
           metrics.decode_started = core::LoadMetrics::Clock::now();
-          auto decoded = [&path] {
+          auto decoded = [&path]() {
             auto format = core::probe_file_header(path);
             if (!format.has_value()) {
               return core::Result<core::ImageFrame>::failure(
@@ -948,7 +948,7 @@ struct MainWindow::Impl {
 
     static_cast<void>(context->executor.submit(
         core::Priority::background,
-        [context, token, generation, cancellation, path] mutable {
+        [context, token, generation, cancellation, path]() mutable {
           if (cancellation.is_cancelled() ||
               !context->scan_generation.is_current(generation)) {
             return;
