@@ -34,7 +34,7 @@ struct ImageFrame {
     }
 
     if (width >
-        std::numeric_limits<std::uint32_t>::max() / bytes_per_pixel) {
+        (std::numeric_limits<std::uint32_t>::max)() / bytes_per_pixel) {
       return resource_limit(L"Image row stride exceeds the uint32 limit.");
     }
     const std::uint32_t stride = width * bytes_per_pixel;
@@ -42,7 +42,7 @@ struct ImageFrame {
     const std::uint64_t pixel_bytes =
         static_cast<std::uint64_t>(stride) * height;
 
-    if (pixel_bytes > std::numeric_limits<std::uint32_t>::max()) {
+    if (pixel_bytes > (std::numeric_limits<std::uint32_t>::max)()) {
       return resource_limit(L"Image pixel storage exceeds the uint32 limit.");
     }
     if (pixel_bytes > byte_budget) {

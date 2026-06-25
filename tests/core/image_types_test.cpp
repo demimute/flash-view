@@ -14,7 +14,7 @@ namespace viewer::core {
 namespace {
 
 TEST(ErrorCodeTest, DistinguishesLostRenderTargets) {
-  constexpr Error error{
+  const Error error{
       .code = ErrorCode::render_target_lost,
       .message = L"lost",
   };
