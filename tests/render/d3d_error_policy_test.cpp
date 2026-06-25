@@ -38,5 +38,26 @@ TEST(D3dErrorPolicyTest, OtherDrawFailuresStayPlatformErrors) {
             DrawAction::platform_error);
 }
 
+TEST(D3dErrorPolicyTest, HardwareDeviceCreationFailureFallsBackToWarp) {
+  EXPECT_EQ(classify_device_creation_failure(
+                GraphicsOutcome::other_failure,
+                RendererDriver::hardware),
+            DeviceCreationAction::try_warp);
+}
+
+TEST(D3dErrorPolicyTest, DeviceLostDuringCreationStaysLost) {
+  EXPECT_EQ(classify_device_creation_failure(
+                GraphicsOutcome::device_removed,
+                RendererDriver::hardware),
+            DeviceCreationAction::render_target_lost);
+}
+
+TEST(D3dErrorPolicyTest, WarpDeviceCreationFailureIsAPlatformError) {
+  EXPECT_EQ(classify_device_creation_failure(
+                GraphicsOutcome::other_failure,
+                RendererDriver::warp),
+            DeviceCreationAction::platform_error);
+}
+
 }  // namespace
 }  // namespace viewer::render

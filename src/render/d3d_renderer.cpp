@@ -111,7 +111,9 @@ bool frame_is_valid(const core::ImageFrame& frame) noexcept {
          frame.pixels.size() == static_cast<std::size_t>(required_bytes);
 }
 
-HRESULT create_d3d_device(UINT flags, ID3D11Device** device,
+HRESULT create_d3d_device(D3D_DRIVER_TYPE driver_type,
+                          UINT flags,
+                          ID3D11Device** device,
                           ID3D11DeviceContext** context) {
   constexpr std::array feature_levels{
       D3D_FEATURE_LEVEL_11_1,
@@ -122,7 +124,7 @@ HRESULT create_d3d_device(UINT flags, ID3D11Device** device,
   D3D_FEATURE_LEVEL selected_level{};
 
   HRESULT result = D3D11CreateDevice(
-      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, feature_levels.data(),
+      nullptr, driver_type, nullptr, flags, feature_levels.data(),
       static_cast<UINT>(feature_levels.size()), D3D11_SDK_VERSION, device,
       &selected_level, context);
   if (result != E_INVALIDARG) {
@@ -130,7 +132,7 @@ HRESULT create_d3d_device(UINT flags, ID3D11Device** device,
   }
 
   return D3D11CreateDevice(
-      nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+      nullptr, driver_type, nullptr, flags,
       feature_levels.data() + 1,
       static_cast<UINT>(feature_levels.size() - 1), D3D11_SDK_VERSION, device,
       &selected_level, context);
@@ -219,10 +221,9 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
   device_flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-  // Phase 1 recovery rebuilds the same hardware renderer. WARP fallback is
-  // intentionally left for Phase 5 so target-loss recovery stays scoped.
   HRESULT result = create_d3d_device(
-      device_flags, impl_->d3d_device.ReleaseAndGetAddressOf(),
+      D3D_DRIVER_TYPE_HARDWARE, device_flags,
+      impl_->d3d_device.ReleaseAndGetAddressOf(),
       impl_->d3d_context.ReleaseAndGetAddressOf());
 #if defined(_DEBUG)
   if (FAILED(result)) {
@@ -230,17 +231,46 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
     impl_->d3d_context.Reset();
     device_flags &= ~D3D11_CREATE_DEVICE_DEBUG;
     result = create_d3d_device(
-        device_flags, impl_->d3d_device.ReleaseAndGetAddressOf(),
+        D3D_DRIVER_TYPE_HARDWARE, device_flags,
+        impl_->d3d_device.ReleaseAndGetAddressOf(),
         impl_->d3d_context.ReleaseAndGetAddressOf());
   }
 #endif
   if (FAILED(result)) {
-    if (is_device_lost(result)) {
-      impl_->mark_lost();
-      return render_target_lost(
-          L"Direct3D device was lost during renderer initialization.");
+    switch (classify_device_creation_failure(
+        classify_hresult(result), RendererDriver::hardware)) {
+      case DeviceCreationAction::try_warp:
+        impl_->d3d_device.Reset();
+        impl_->d3d_context.Reset();
+        result = create_d3d_device(
+            D3D_DRIVER_TYPE_WARP, device_flags,
+            impl_->d3d_device.ReleaseAndGetAddressOf(),
+            impl_->d3d_context.ReleaseAndGetAddressOf());
+        break;
+
+      case DeviceCreationAction::render_target_lost:
+        impl_->mark_lost();
+        return render_target_lost(
+            L"Direct3D device was lost during renderer initialization.");
+
+      case DeviceCreationAction::platform_error:
+      case DeviceCreationAction::use_created_device:
+        return platform_failure(L"Direct3D device creation failed.");
     }
-    return platform_failure(L"Direct3D device creation failed.");
+  }
+  if (FAILED(result)) {
+    switch (classify_device_creation_failure(
+        classify_hresult(result), RendererDriver::warp)) {
+      case DeviceCreationAction::render_target_lost:
+        impl_->mark_lost();
+        return render_target_lost(
+            L"Direct3D WARP device was lost during renderer initialization.");
+
+      case DeviceCreationAction::platform_error:
+      case DeviceCreationAction::try_warp:
+      case DeviceCreationAction::use_created_device:
+        return platform_failure(L"Direct3D device creation failed.");
+    }
   }
 
   ComPtr<IDXGIDevice> dxgi_device;
