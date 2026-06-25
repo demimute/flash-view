@@ -3,6 +3,7 @@
 #include <d2d1_1.h>
 #include <d2d1_1helper.h>
 #include <d3d11_1.h>
+#include <d3d9types.h>
 #include <d3dumddi.h>
 #include <dwrite.h>
 #include <dxgi1_4.h>
@@ -106,7 +107,7 @@ bool frame_is_valid(const core::ImageFrame& frame) noexcept {
 
   const std::uint64_t required_bytes =
       static_cast<std::uint64_t>(frame.stride) * frame.height;
-  return required_bytes <= std::numeric_limits<std::size_t>::max() &&
+  return required_bytes <= (std::numeric_limits<std::size_t>::max)() &&
          frame.pixels.size() == static_cast<std::size_t>(required_bytes);
 }
 
@@ -471,7 +472,7 @@ core::Result<bool> D3dRenderer::draw(
     const D2D1_RECT_F layout = D2D1::RectF(
         32.0F, 0.0F, static_cast<float>(viewport_size.width) - 32.0F,
         static_cast<float>(viewport_size.height));
-    impl_->d2d_context->DrawTextW(
+    impl_->d2d_context->DrawText(
         impl_->status_text.c_str(),
         static_cast<UINT32>(impl_->status_text.size()),
         impl_->status_text_format.Get(), layout,
