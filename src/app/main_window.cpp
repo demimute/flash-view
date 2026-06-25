@@ -1,5 +1,6 @@
 #include "app/main_window.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -11,6 +12,8 @@
 #include <thread>
 #include <utility>
 
+#include <commdlg.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include "viewer/app/input_mapping.h"
@@ -35,6 +38,8 @@ namespace {
 
 constexpr wchar_t window_class_name[] = L"FastImageViewer.MainWindow";
 constexpr wchar_t window_title[] = L"Fast Image Viewer";
+constexpr wchar_t empty_prompt[] =
+    L"Drop image here or press O to open.";
 constexpr UINT image_ready_message = WM_APP + 1;
 constexpr UINT navigator_ready_message = WM_APP + 2;
 constexpr std::size_t decode_byte_budget =
@@ -186,6 +191,51 @@ struct MainWindow::Impl {
     renderer.set_status_text(status_text);
   }
 
+  void show_empty_prompt() {
+    renderer.clear_image();
+    reset_displayed_frame();
+    pending_load_debug.reset();
+    set_renderer_status_text(empty_prompt);
+    InvalidateRect(window, nullptr, FALSE);
+  }
+
+  void open_with_dialog() {
+    std::array<wchar_t, 32768> path{};
+    OPENFILENAMEW dialog{
+        .lStructSize = sizeof(OPENFILENAMEW),
+        .hwndOwner = window,
+        .lpstrFilter =
+            L"Images (*.jpg;*.jpeg;*.png;*.bmp)\0*.jpg;*.jpeg;*.png;*.bmp\0"
+            L"All files (*.*)\0*.*\0",
+        .lpstrFile = path.data(),
+        .nMaxFile = static_cast<DWORD>(path.size()),
+        .lpstrTitle = L"Open image",
+        .Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                 OFN_NOCHANGEDIR | OFN_HIDEREADONLY,
+    };
+
+    if (GetOpenFileNameW(&dialog) != FALSE) {
+      open_path(path.data());
+    }
+  }
+
+  void open_first_dropped_file(HDROP drop) {
+    const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
+    if (length == 0) {
+      return;
+    }
+
+    std::wstring path(length + 1, L'\0');
+    const UINT copied =
+        DragQueryFileW(drop, 0, path.data(), static_cast<UINT>(path.size()));
+    if (copied == 0) {
+      return;
+    }
+
+    path.resize(copied);
+    open_path(path);
+  }
+
   void fit_displayed_frame() {
     if (displayed_size.width == 0 || displayed_size.height == 0) {
       return;
@@ -317,6 +367,21 @@ struct MainWindow::Impl {
         prefetches.finish(path);
       }
     }
+  }
+
+  void open_path(const std::filesystem::path& path) {
+    const std::shared_ptr<AsyncLoadContext> context = async_load;
+    if (window == nullptr || !context) {
+      return;
+    }
+
+    context->cancellation.cancel();
+    context->cancellation = core::CancellationSource{};
+    prefetches.clear();
+    navigator.reset();
+
+    request_image(path, core::Priority::current_image, true);
+    request_directory_scan(path);
   }
 
   void request_directory_scan(const std::filesystem::path& path) {
@@ -632,6 +697,8 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
     return false;
   }
   impl_->renderer_ready = true;
+  impl_->show_empty_prompt();
+  DragAcceptFiles(window, TRUE);
 
   ShowWindow(window, show_command);
   UpdateWindow(window);
@@ -639,19 +706,7 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
 }
 
 void MainWindow::open_path(const std::filesystem::path& path) {
-  const std::shared_ptr<AsyncLoadContext> context =
-      impl_->async_load;
-  if (impl_->window == nullptr || !context) {
-    return;
-  }
-
-  context->cancellation.cancel();
-  context->cancellation = core::CancellationSource{};
-  impl_->prefetches.clear();
-  impl_->navigator.reset();
-
-  impl_->request_image(path, core::Priority::current_image, true);
-  impl_->request_directory_scan(path);
+  impl_->open_path(path);
 }
 
 LRESULT CALLBACK MainWindow::window_proc(
@@ -882,6 +937,10 @@ LRESULT MainWindow::handle_message(
           impl_->navigate_next();
           return 0;
 
+        case KeyAction::open:
+          impl_->open_with_dialog();
+          return 0;
+
         case KeyAction::fit:
           impl_->fit_displayed_frame();
           InvalidateRect(impl_->window, nullptr, FALSE);
@@ -901,6 +960,13 @@ LRESULT MainWindow::handle_message(
           break;
       }
       break;
+
+    case WM_DROPFILES: {
+      const HDROP drop = reinterpret_cast<HDROP>(wparam);
+      impl_->open_first_dropped_file(drop);
+      DragFinish(drop);
+      return 0;
+    }
 
     case WM_CLOSE:
       impl_->end_pan();
