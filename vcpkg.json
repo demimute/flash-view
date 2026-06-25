@@ -1,0 +1,8 @@
+{
+  "name": "fast-image-viewer",
+  "version-string": "0.1.0",
+  "builtin-baseline": "18a4723aeb7adbbae84bcff0edf510883800f32f",
+  "dependencies": [
+    "gtest"
+  ]
+}
