@@ -60,8 +60,27 @@ the Windows vcpkg manifest workflow.
 Open any image in a directory to enable previous/next navigation across the
 supported images in that directory.
 
+You can also launch `fast_viewer.exe` without an argument. The empty window
+shows a small prompt; press `O` to open an image, or drag an image file into the
+window.
+
+## Register file associations
+
+The release artifact includes `register_file_associations.ps1`. Run it from the
+same directory as `fast_viewer.exe` to register JPEG, PNG, and BMP files for the
+current Windows user:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register_file_associations.ps1
+```
+
+After registration, supported image files can be opened with FlashView from
+Windows Explorer. If Windows already has a default app for an extension, use
+"Open with" once to choose FlashView.
+
 ## Phase 1 controls
 
+- O: open image
 - Left / Up / Page Up: previous image
 - Right / Down / Page Down / Space: next image
 - Mouse wheel: zoom

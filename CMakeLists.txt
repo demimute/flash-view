@@ -77,6 +77,7 @@ if(WIN32)
     viewer_core
     viewer_wic
     viewer_render
+    comdlg32
     comctl32
     shell32
     ole32

@@ -17,6 +17,7 @@ enum class KeyAction {
   none,
   previous,
   next,
+  open,
   fit,
   one_to_one,
   rotate_clockwise,
@@ -34,6 +35,10 @@ enum class KeyAction {
     case kKeyPageDown:
     case kKeySpace:
       return KeyAction::next;
+
+    case 'O':
+    case 'o':
+      return KeyAction::open;
 
     case 'F':
     case 'f':

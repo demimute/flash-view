@@ -20,6 +20,8 @@ TEST(InputMappingTest, MapsTask12NavigationKeys) {
 }
 
 TEST(InputMappingTest, MapsTask13InteractionKeysCaseInsensitively) {
+  EXPECT_EQ(classify_key('O'), KeyAction::open);
+  EXPECT_EQ(classify_key('o'), KeyAction::open);
   EXPECT_EQ(classify_key('F'), KeyAction::fit);
   EXPECT_EQ(classify_key('f'), KeyAction::fit);
   EXPECT_EQ(classify_key('1'), KeyAction::one_to_one);
