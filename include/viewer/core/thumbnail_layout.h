@@ -14,7 +14,7 @@ enum class ThumbnailDock {
 
 struct ThumbnailLayoutState {
   bool visible = false;
-  bool preview_visible = true;
+  bool preview_visible = false;
   ThumbnailDock dock = ThumbnailDock::bottom;
   std::uint32_t thumbnail_size = 128;
   std::uint32_t panel_extent = 220;
@@ -29,6 +29,10 @@ struct ThumbnailLayoutState {
 
   void shrink_thumbnails() noexcept {
     thumbnail_size = thumbnail_size <= 48 ? 48 : thumbnail_size - 16;
+  }
+
+  void resize_panel(std::uint32_t extent) noexcept {
+    panel_extent = std::clamp<std::uint32_t>(extent, 96, 520);
   }
 
   void cycle_dock() noexcept {

@@ -51,8 +51,7 @@ constexpr UINT image_ready_message = WM_APP + 1;
 constexpr UINT navigator_ready_message = WM_APP + 2;
 constexpr UINT_PTR animation_timer_id = 2000;
 constexpr UINT_PTR toolbar_first_id = 3000;
-constexpr UINT_PTR thumb_list_id = 3100;
-constexpr UINT_PTR preview_box_id = 3101;
+constexpr UINT_PTR toolbar_hide_timer_id = 2001;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
 
@@ -109,21 +108,19 @@ struct ShutdownPayload {
 
 struct ToolbarButton {
   UINT_PTR id;
-  const wchar_t* label;
 };
 
 constexpr std::array toolbar_buttons{
-    ToolbarButton{toolbar_first_id + 0, L"O"},
-    ToolbarButton{toolbar_first_id + 1, L"‹"},
-    ToolbarButton{toolbar_first_id + 2, L"›"},
-    ToolbarButton{toolbar_first_id + 3, L"⌖"},
-    ToolbarButton{toolbar_first_id + 4, L"1"},
-    ToolbarButton{toolbar_first_id + 5, L"↻"},
-    ToolbarButton{toolbar_first_id + 6, L"▦"},
-    ToolbarButton{toolbar_first_id + 7, L"↕"},
-    ToolbarButton{toolbar_first_id + 8, L"◫"},
-    ToolbarButton{toolbar_first_id + 9, L"+"},
-    ToolbarButton{toolbar_first_id + 10, L"−"},
+    ToolbarButton{toolbar_first_id + 0},
+    ToolbarButton{toolbar_first_id + 1},
+    ToolbarButton{toolbar_first_id + 2},
+    ToolbarButton{toolbar_first_id + 3},
+    ToolbarButton{toolbar_first_id + 4},
+    ToolbarButton{toolbar_first_id + 5},
+    ToolbarButton{toolbar_first_id + 6},
+    ToolbarButton{toolbar_first_id + 7},
+    ToolbarButton{toolbar_first_id + 8},
+    ToolbarButton{toolbar_first_id + 9},
 };
 
 void CALLBACK reap_async_load_context(
@@ -202,13 +199,10 @@ struct MainWindow::Impl {
   core::PrefetchTracker prefetches;
   WheelDeltaAccumulator wheel_delta;
   PanTracker pan;
-  HFONT toolbar_font = nullptr;
   core::ThumbnailLayoutState thumbnail_layout;
-  std::vector<HWND> toolbar;
-  HWND thumbnail_list = nullptr;
-  HWND preview_box = nullptr;
-  bool syncing_thumbnail_selection = false;
-  bool resizing_preview_splitter = false;
+  bool toolbar_visible = false;
+  std::array<RECT, toolbar_buttons.size()> toolbar_button_rects{};
+  bool resizing_thumbnail_panel = false;
   std::vector<std::filesystem::path> temporary_archive_dirs;
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
@@ -267,173 +261,100 @@ struct MainWindow::Impl {
     renderer.clear_image();
     reset_displayed_frame();
     stop_animation();
+    toolbar_visible = false;
+    KillTimer(window, toolbar_hide_timer_id);
     pending_load_debug.reset();
     set_renderer_status_text(empty_prompt);
     InvalidateRect(window, nullptr, FALSE);
   }
 
   void create_child_controls() {
-    if (window == nullptr || !toolbar.empty()) {
-      return;
-    }
-
-    InitCommonControls();
-    toolbar_font = CreateFontW(
-        17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-    for (const ToolbarButton& spec : toolbar_buttons) {
-      HWND button = CreateWindowExW(
-          0, L"BUTTON", spec.label,
-          WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-          0, 0, 38, 30, window, reinterpret_cast<HMENU>(spec.id),
-          GetModuleHandleW(nullptr), nullptr);
-      if (button != nullptr) {
-        if (toolbar_font != nullptr) {
-          SendMessageW(button, WM_SETFONT,
-                       reinterpret_cast<WPARAM>(toolbar_font), TRUE);
-        }
-        toolbar.push_back(button);
-      }
-    }
-
-    thumbnail_list = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-        WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_OWNERDRAWFIXED |
-            LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
-        0, 0, 100, 100, window,
-        reinterpret_cast<HMENU>(thumb_list_id), GetModuleHandleW(nullptr),
-        nullptr);
-    preview_box = CreateWindowExW(
-        WS_EX_CLIENTEDGE, L"STATIC", L"Preview",
-        WS_CHILD | SS_OWNERDRAW,
-        0, 0, 100, 100, window,
-        reinterpret_cast<HMENU>(preview_box_id), GetModuleHandleW(nullptr),
-        nullptr);
     update_child_layout();
   }
 
   void update_child_layout() {
-    if (window == nullptr) {
-      return;
-    }
-
-    RECT client{};
-    if (!GetClientRect(window, &client)) {
-      return;
-    }
-
-    constexpr int toolbar_height = 34;
-    constexpr int button_width = 38;
-    constexpr int button_height = 30;
-    constexpr int button_gap = 5;
-    int x = 6;
-    for (HWND button : toolbar) {
-      MoveWindow(button, x, 3, button_width, button_height, TRUE);
-      SetWindowPos(button, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-      x += button_width + button_gap;
-    }
-
-    const bool show_thumbs = thumbnail_layout.visible &&
-                             thumbnail_list != nullptr;
-    if (thumbnail_list != nullptr) {
-      ShowWindow(thumbnail_list, show_thumbs ? SW_SHOW : SW_HIDE);
-    }
-    if (preview_box != nullptr) {
-      ShowWindow(preview_box,
-                 show_thumbs && thumbnail_layout.preview_visible ? SW_SHOW
-                                                                 : SW_HIDE);
-    }
-    if (!show_thumbs) {
-      return;
-    }
-
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
-    const int preview = thumbnail_layout.preview_visible
-                            ? static_cast<int>(thumbnail_layout.preview_extent)
-                            : 0;
-    const int splitter = thumbnail_layout.preview_visible ? 6 : 0;
-    RECT list_rect{};
-    RECT preview_rect{};
-
-    switch (thumbnail_layout.dock) {
-      case core::ThumbnailDock::bottom:
-        list_rect = {0, height - panel, width - preview - splitter, height};
-        preview_rect = {width - preview, height - panel, width, height};
-        break;
-      case core::ThumbnailDock::top:
-        list_rect = {0, toolbar_height, width - preview - splitter,
-                     toolbar_height + panel};
-        preview_rect = {width - preview, toolbar_height, width,
-                        toolbar_height + panel};
-        break;
-      case core::ThumbnailDock::left:
-        list_rect = {0, toolbar_height, panel,
-                     height - preview - splitter};
-        preview_rect = {0, height - preview, panel, height};
-        break;
-      case core::ThumbnailDock::right:
-        list_rect = {width - panel, toolbar_height, width,
-                     height - preview - splitter};
-        preview_rect = {width - panel, height - preview, width, height};
-        break;
-    }
-
-    MoveWindow(thumbnail_list, list_rect.left, list_rect.top,
-               list_rect.right - list_rect.left,
-               list_rect.bottom - list_rect.top, TRUE);
-    SetWindowPos(thumbnail_list, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    if (preview_box != nullptr && thumbnail_layout.preview_visible) {
-      MoveWindow(preview_box, preview_rect.left, preview_rect.top,
-                 preview_rect.right - preview_rect.left,
-                 preview_rect.bottom - preview_rect.top, TRUE);
-      SetWindowPos(preview_box, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-    SendMessageW(thumbnail_list, LB_SETITEMHEIGHT, 0,
-                 static_cast<LPARAM>(thumbnail_layout.thumbnail_size + 24));
     InvalidateRect(window, nullptr, FALSE);
   }
 
-  [[nodiscard]] std::optional<RECT> preview_splitter_rect() const {
-    if (window == nullptr || !thumbnail_layout.visible ||
-        !thumbnail_layout.preview_visible) {
-      return std::nullopt;
-    }
+  [[nodiscard]] RECT client_rect() const noexcept {
     RECT client{};
-    if (!GetClientRect(window, &client)) {
-      return std::nullopt;
+    if (window != nullptr) {
+      GetClientRect(window, &client);
     }
-    constexpr int toolbar_height = 34;
-    constexpr int splitter = 6;
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
-    const int preview = static_cast<int>(thumbnail_layout.preview_extent);
+    return client;
+  }
 
+  [[nodiscard]] RECT thumbnail_panel_rect() const noexcept {
+    RECT client = client_rect();
+    if (!thumbnail_layout.visible) {
+      return RECT{};
+    }
+
+    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
     switch (thumbnail_layout.dock) {
       case core::ThumbnailDock::bottom:
-        return RECT{width - preview - splitter, height - panel,
-                    width - preview, height};
+        client.top = (std::max)(client.top, client.bottom - panel);
+        return client;
       case core::ThumbnailDock::top:
-        return RECT{width - preview - splitter, toolbar_height,
-                    width - preview, toolbar_height + panel};
+        client.bottom = (std::min)(client.bottom, client.top + panel);
+        return client;
       case core::ThumbnailDock::left:
-        return RECT{0, height - preview - splitter, panel,
-                    height - preview};
+        client.right = (std::min)(client.right, client.left + panel);
+        return client;
       case core::ThumbnailDock::right:
-        return RECT{width - panel, height - preview - splitter, width,
-                    height - preview};
+        client.left = (std::max)(client.left, client.right - panel);
+        return client;
+    }
+    return client;
+  }
+
+  [[nodiscard]] RECT image_area_rect() const noexcept {
+    RECT client = client_rect();
+    if (!thumbnail_layout.visible) {
+      return client;
+    }
+    const int panel = static_cast<int>(thumbnail_layout.panel_extent);
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+        client.bottom = (std::max)(client.top, client.bottom - panel);
+        return client;
+      case core::ThumbnailDock::top:
+        client.top = (std::min)(client.bottom, client.top + panel);
+        return client;
+      case core::ThumbnailDock::left:
+        client.left = (std::min)(client.right, client.left + panel);
+        return client;
+      case core::ThumbnailDock::right:
+        client.right = (std::max)(client.left, client.right - panel);
+        return client;
+    }
+    return client;
+  }
+
+  [[nodiscard]] std::optional<RECT> thumbnail_splitter_rect() const {
+    if (window == nullptr || !thumbnail_layout.visible) {
+      return std::nullopt;
+    }
+    constexpr int splitter = 6;
+    RECT panel = thumbnail_panel_rect();
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+        return RECT{panel.left, panel.top, panel.right, panel.top + splitter};
+      case core::ThumbnailDock::top:
+        return RECT{panel.left, panel.bottom - splitter, panel.right,
+                    panel.bottom};
+      case core::ThumbnailDock::left:
+        return RECT{panel.right - splitter, panel.top, panel.right,
+                    panel.bottom};
+      case core::ThumbnailDock::right:
+        return RECT{panel.left, panel.top, panel.left + splitter,
+                    panel.bottom};
     }
     return std::nullopt;
   }
 
-  [[nodiscard]] bool begin_preview_resize(Point point) {
-    const auto splitter = preview_splitter_rect();
+  [[nodiscard]] bool begin_thumbnail_panel_resize(Point point) {
+    const auto splitter = thumbnail_splitter_rect();
     if (!splitter.has_value()) {
       return false;
     }
@@ -441,94 +362,39 @@ struct MainWindow::Impl {
     if (PtInRect(&*splitter, native_point) == FALSE) {
       return false;
     }
-    resizing_preview_splitter = true;
+    resizing_thumbnail_panel = true;
     SetCapture(window);
     return true;
   }
 
-  void resize_preview_to(Point point) {
-    if (!resizing_preview_splitter) {
+  void resize_thumbnail_panel_to(Point point) {
+    if (!resizing_thumbnail_panel) {
       return;
     }
-    RECT client{};
-    if (!GetClientRect(window, &client)) {
-      return;
-    }
-    constexpr int toolbar_height = 34;
+    const RECT client = client_rect();
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
-    if (thumbnail_layout.dock == core::ThumbnailDock::bottom ||
-        thumbnail_layout.dock == core::ThumbnailDock::top) {
-      const int requested = width - point.x;
-      thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
-          (std::clamp)(requested, 120, (std::max)(120, width - 160)));
-    } else {
-      const int requested = height - point.y;
-      thumbnail_layout.preview_extent = static_cast<std::uint32_t>(
-          (std::clamp)(requested, 100,
-                       (std::max)(100, height - toolbar_height - 120)));
+    std::uint32_t requested = thumbnail_layout.panel_extent;
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+        requested = static_cast<std::uint32_t>((std::max)(0, height - point.y));
+        break;
+      case core::ThumbnailDock::top:
+        requested = static_cast<std::uint32_t>((std::max)(0, point.y));
+        break;
+      case core::ThumbnailDock::left:
+        requested = static_cast<std::uint32_t>((std::max)(0, point.x));
+        break;
+      case core::ThumbnailDock::right:
+        requested = static_cast<std::uint32_t>((std::max)(0, width - point.x));
+        break;
     }
+    thumbnail_layout.resize_panel(requested);
     update_child_layout();
   }
 
-  void draw_toolbar_button(const DRAWITEMSTRUCT& item) {
-    const bool selected = (item.itemState & ODS_SELECTED) == ODS_SELECTED;
-    const bool focus = (item.itemState & ODS_FOCUS) == ODS_FOCUS;
-    HBRUSH background = CreateSolidBrush(
-        selected ? RGB(64, 92, 128) : RGB(36, 40, 46));
-    FillRect(item.hDC, &item.rcItem, background);
-    DeleteObject(background);
-
-    HPEN border = CreatePen(PS_SOLID, 1,
-                            focus ? RGB(126, 170, 230)
-                                  : RGB(70, 76, 86));
-    HGDIOBJ old_pen = SelectObject(item.hDC, border);
-    HGDIOBJ old_brush = SelectObject(
-        item.hDC, GetStockObject(NULL_BRUSH));
-    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top,
-              item.rcItem.right, item.rcItem.bottom, 8, 8);
-    SelectObject(item.hDC, old_brush);
-    SelectObject(item.hDC, old_pen);
-    DeleteObject(border);
-
-    wchar_t text[32]{};
-    GetWindowTextW(item.hwndItem, text, static_cast<int>(_countof(text)));
-    SetBkMode(item.hDC, TRANSPARENT);
-    SetTextColor(item.hDC, RGB(232, 238, 248));
-    HFONT old_font = nullptr;
-    if (toolbar_font != nullptr) {
-      old_font = reinterpret_cast<HFONT>(
-          SelectObject(item.hDC, toolbar_font));
-    }
-    RECT text_rect = item.rcItem;
-    DrawTextW(item.hDC, text, -1, &text_rect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    if (old_font != nullptr) {
-      SelectObject(item.hDC, old_font);
-    }
-  }
-
   void refresh_thumbnail_items() {
-    if (thumbnail_list == nullptr) {
-      return;
-    }
-
-    syncing_thumbnail_selection = true;
-    SendMessageW(thumbnail_list, LB_RESETCONTENT, 0, 0);
-    if (navigator.has_value()) {
-      const auto& items = navigator->items();
-      for (const auto& item : items) {
-        const std::wstring label = item.filename().wstring();
-        SendMessageW(thumbnail_list, LB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(label.c_str()));
-      }
-      SendMessageW(thumbnail_list, LB_SETCURSEL,
-                   static_cast<WPARAM>(navigator->current_index()), 0);
-      update_preview_label();
-    } else if (preview_box != nullptr) {
-      SetWindowTextW(preview_box, L"Preview");
-    }
-    syncing_thumbnail_selection = false;
+    InvalidateRect(window, nullptr, FALSE);
   }
 
   [[nodiscard]] std::shared_ptr<core::ImageFrame> thumbnail_frame_for(
@@ -613,18 +479,6 @@ struct MainWindow::Impl {
   }
 
   void update_preview_label() {
-    if (preview_box == nullptr) {
-      return;
-    }
-    const std::filesystem::path current = current_path();
-    if (current.empty()) {
-      SetWindowTextW(preview_box, L"Preview");
-      return;
-    }
-    std::wstring text = L"◫\r\n";
-    text += current.filename().wstring();
-    SetWindowTextW(preview_box, text.c_str());
-    InvalidateRect(preview_box, nullptr, TRUE);
   }
 
   void draw_preview_item(const DRAWITEMSTRUCT& item) {
@@ -668,6 +522,323 @@ struct MainWindow::Impl {
                   static_cast<int>(frame->width),
                   static_cast<int>(frame->height), frame->pixels.data(),
                   &bitmap_info, DIB_RGB_COLORS, SRCCOPY);
+  }
+
+  void alpha_fill_rect(HDC target, RECT rect, COLORREF color,
+                       BYTE alpha) const {
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    BITMAPINFO bitmap_info{};
+    bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bitmap_info.bmiHeader.biWidth = width;
+    bitmap_info.bmiHeader.biHeight = -height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(target, &bitmap_info, DIB_RGB_COLORS,
+                                      &bits, nullptr, 0);
+    if (bitmap == nullptr || bits == nullptr) {
+      return;
+    }
+
+    const std::uint32_t pixel =
+        (static_cast<std::uint32_t>(alpha) << 24U) |
+        (static_cast<std::uint32_t>(GetRValue(color)) << 16U) |
+        (static_cast<std::uint32_t>(GetGValue(color)) << 8U) |
+        static_cast<std::uint32_t>(GetBValue(color));
+    std::fill_n(static_cast<std::uint32_t*>(bits),
+                static_cast<std::size_t>(width) *
+                    static_cast<std::size_t>(height),
+                pixel);
+
+    HDC memory = CreateCompatibleDC(target);
+    HGDIOBJ old_bitmap = SelectObject(memory, bitmap);
+    BLENDFUNCTION blend{
+        .BlendOp = AC_SRC_OVER,
+        .BlendFlags = 0,
+        .SourceConstantAlpha = 255,
+        .AlphaFormat = AC_SRC_ALPHA,
+    };
+    AlphaBlend(target, rect.left, rect.top, width, height, memory, 0, 0,
+               width, height, blend);
+    SelectObject(memory, old_bitmap);
+    DeleteDC(memory);
+    DeleteObject(bitmap);
+  }
+
+  [[nodiscard]] RECT toolbar_rect() const noexcept {
+    RECT image = image_area_rect();
+    constexpr int button = 40;
+    constexpr int gap = 8;
+    constexpr int padding = 10;
+    constexpr int height = 52;
+    const int width = padding * 2 +
+                      static_cast<int>(toolbar_buttons.size()) * button +
+                      static_cast<int>(toolbar_buttons.size() - 1) * gap;
+    const int image_width = image.right - image.left;
+    int left = image.left + (image_width - width) / 2;
+    left = (std::max)(image.left + 12, left);
+    int top = image.bottom - height - 22;
+    top = (std::max)(image.top + 12, top);
+    return RECT{left, top, left + width, top + height};
+  }
+
+  void layout_toolbar_buttons() noexcept {
+    const RECT bar = toolbar_rect();
+    constexpr int button = 40;
+    constexpr int gap = 8;
+    int left = bar.left + 10;
+    for (std::size_t index = 0; index < toolbar_button_rects.size(); ++index) {
+      toolbar_button_rects[index] =
+          RECT{left, bar.top + 6, left + button, bar.top + 46};
+      left += button + gap;
+    }
+  }
+
+  void draw_toolbar_icon(HDC hdc, RECT rect, std::size_t index) {
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(238, 244, 252));
+    HGDIOBJ old_pen = SelectObject(hdc, pen);
+    HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    const int cx = (rect.left + rect.right) / 2;
+    const int cy = (rect.top + rect.bottom) / 2;
+
+    switch (index) {
+      case 0:  // open folder
+        MoveToEx(hdc, rect.left + 9, rect.top + 16, nullptr);
+        LineTo(hdc, rect.left + 15, rect.top + 11);
+        LineTo(hdc, rect.left + 23, rect.top + 11);
+        LineTo(hdc, rect.left + 27, rect.top + 15);
+        LineTo(hdc, rect.right - 8, rect.top + 15);
+        Rectangle(hdc, rect.left + 8, rect.top + 16, rect.right - 8,
+                  rect.bottom - 9);
+        break;
+      case 1: {
+        POINT triangle[]{{cx - 9, cy}, {cx + 7, cy - 10}, {cx + 7, cy + 10}};
+        Polygon(hdc, triangle, 3);
+        break;
+      }
+      case 2: {
+        POINT triangle[]{{cx + 9, cy}, {cx - 7, cy - 10}, {cx - 7, cy + 10}};
+        Polygon(hdc, triangle, 3);
+        break;
+      }
+      case 3:  // fit
+        MoveToEx(hdc, rect.left + 10, rect.top + 17, nullptr);
+        LineTo(hdc, rect.left + 10, rect.top + 10);
+        LineTo(hdc, rect.left + 17, rect.top + 10);
+        MoveToEx(hdc, rect.right - 17, rect.top + 10, nullptr);
+        LineTo(hdc, rect.right - 10, rect.top + 10);
+        LineTo(hdc, rect.right - 10, rect.top + 17);
+        MoveToEx(hdc, rect.left + 10, rect.bottom - 17, nullptr);
+        LineTo(hdc, rect.left + 10, rect.bottom - 10);
+        LineTo(hdc, rect.left + 17, rect.bottom - 10);
+        MoveToEx(hdc, rect.right - 17, rect.bottom - 10, nullptr);
+        LineTo(hdc, rect.right - 10, rect.bottom - 10);
+        LineTo(hdc, rect.right - 10, rect.bottom - 17);
+        break;
+      case 4:
+        Rectangle(hdc, rect.left + 11, rect.top + 10, rect.right - 11,
+                  rect.bottom - 10);
+        TextOutW(hdc, cx - 3, cy - 8, L"1", 1);
+        break;
+      case 5:
+        Arc(hdc, rect.left + 9, rect.top + 9, rect.right - 9,
+            rect.bottom - 9, rect.right - 12, cy, cx, rect.top + 8);
+        MoveToEx(hdc, rect.right - 13, cy - 7, nullptr);
+        LineTo(hdc, rect.right - 8, cy);
+        LineTo(hdc, rect.right - 16, cy + 2);
+        break;
+      case 6:
+        for (int row = 0; row < 3; ++row) {
+          for (int col = 0; col < 3; ++col) {
+            Rectangle(hdc, rect.left + 10 + col * 7, rect.top + 10 + row * 7,
+                      rect.left + 15 + col * 7, rect.top + 15 + row * 7);
+          }
+        }
+        break;
+      case 7:
+        Rectangle(hdc, rect.left + 9, rect.top + 9, rect.right - 9,
+                  rect.bottom - 9);
+        MoveToEx(hdc, rect.left + 9, rect.bottom - 17, nullptr);
+        LineTo(hdc, rect.right - 9, rect.bottom - 17);
+        break;
+      case 8:
+        MoveToEx(hdc, cx - 8, cy, nullptr);
+        LineTo(hdc, cx + 8, cy);
+        MoveToEx(hdc, cx, cy - 8, nullptr);
+        LineTo(hdc, cx, cy + 8);
+        break;
+      case 9:
+        MoveToEx(hdc, cx - 8, cy, nullptr);
+        LineTo(hdc, cx + 8, cy);
+        break;
+      default:
+        break;
+    }
+
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    DeleteObject(pen);
+  }
+
+  void draw_toolbar(HDC hdc) {
+    if (!toolbar_visible) {
+      return;
+    }
+    layout_toolbar_buttons();
+    const RECT bar = toolbar_rect();
+    alpha_fill_rect(hdc, bar, RGB(18, 21, 25), 190);
+    HPEN border = CreatePen(PS_SOLID, 1, RGB(88, 96, 110));
+    HGDIOBJ old_pen = SelectObject(hdc, border);
+    HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    RoundRect(hdc, bar.left, bar.top, bar.right, bar.bottom, 14, 14);
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    DeleteObject(border);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(238, 244, 252));
+    for (std::size_t index = 0; index < toolbar_button_rects.size(); ++index) {
+      draw_toolbar_icon(hdc, toolbar_button_rects[index], index);
+    }
+  }
+
+  void draw_thumbnail_grid(HDC hdc) {
+    if (!thumbnail_layout.visible || !navigator.has_value()) {
+      return;
+    }
+    const RECT panel = thumbnail_panel_rect();
+    alpha_fill_rect(hdc, panel, RGB(20, 23, 28), 235);
+    if (const auto splitter = thumbnail_splitter_rect()) {
+      HBRUSH brush = CreateSolidBrush(RGB(80, 88, 102));
+      FillRect(hdc, &*splitter, brush);
+      DeleteObject(brush);
+    }
+
+    const int thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
+    const int cell_width = thumb + 28;
+    const int cell_height = thumb + 42;
+    const int padding = 14;
+    const int usable_width = (panel.right - panel.left) - padding * 2;
+    const int columns = (std::max)(1, usable_width / cell_width);
+    SetStretchBltMode(hdc, HALFTONE);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(218, 224, 234));
+
+    const auto& items = navigator->items();
+    for (std::size_t index = 0; index < items.size(); ++index) {
+      const int row = static_cast<int>(index) / columns;
+      const int col = static_cast<int>(index) % columns;
+      RECT cell{
+          panel.left + padding + col * cell_width,
+          panel.top + padding + row * cell_height,
+          panel.left + padding + col * cell_width + cell_width - 10,
+          panel.top + padding + row * cell_height + cell_height - 8,
+      };
+      if (cell.top >= panel.bottom) {
+        break;
+      }
+      if (cell.bottom <= panel.top) {
+        continue;
+      }
+      RECT image_rect{cell.left + 8, cell.top + 6, cell.left + 8 + thumb,
+                      cell.top + 6 + thumb};
+      const bool selected = index == navigator->current_index();
+      HBRUSH selected_brush = CreateSolidBrush(
+          selected ? RGB(52, 86, 128) : RGB(34, 38, 44));
+      FillRect(hdc, &cell, selected_brush);
+      DeleteObject(selected_brush);
+
+      const auto frame = thumbnail_frame_for(items[index]);
+      if (frame && !frame->pixels.empty()) {
+        BITMAPINFO bitmap_info{};
+        bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bitmap_info.bmiHeader.biWidth = static_cast<LONG>(frame->width);
+        bitmap_info.bmiHeader.biHeight = -static_cast<LONG>(frame->height);
+        bitmap_info.bmiHeader.biPlanes = 1;
+        bitmap_info.bmiHeader.biBitCount = 32;
+        bitmap_info.bmiHeader.biCompression = BI_RGB;
+        StretchDIBits(hdc, image_rect.left, image_rect.top,
+                      image_rect.right - image_rect.left,
+                      image_rect.bottom - image_rect.top, 0, 0,
+                      static_cast<int>(frame->width),
+                      static_cast<int>(frame->height), frame->pixels.data(),
+                      &bitmap_info, DIB_RGB_COLORS, SRCCOPY);
+      }
+      HPEN border = CreatePen(PS_SOLID, selected ? 2 : 1,
+                              selected ? RGB(126, 170, 230)
+                                       : RGB(78, 84, 94));
+      HGDIOBJ old_pen = SelectObject(hdc, border);
+      HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+      Rectangle(hdc, image_rect.left, image_rect.top, image_rect.right,
+                image_rect.bottom);
+      SelectObject(hdc, old_brush);
+      SelectObject(hdc, old_pen);
+      DeleteObject(border);
+
+      RECT text_rect{cell.left + 4, image_rect.bottom + 6, cell.right - 4,
+                     cell.bottom - 2};
+      const std::wstring filename = items[index].filename().wstring();
+      DrawTextW(hdc, filename.c_str(), -1, &text_rect,
+                DT_CENTER | DT_END_ELLIPSIS | DT_SINGLELINE);
+    }
+  }
+
+  void draw_overlays(HDC hdc) {
+    draw_thumbnail_grid(hdc);
+    draw_toolbar(hdc);
+  }
+
+  [[nodiscard]] std::optional<std::size_t> toolbar_hit(Point point) {
+    if (!toolbar_visible) {
+      return std::nullopt;
+    }
+    layout_toolbar_buttons();
+    POINT native{point.x, point.y};
+    for (std::size_t index = 0; index < toolbar_button_rects.size(); ++index) {
+      if (PtInRect(&toolbar_button_rects[index], native) != FALSE) {
+        return index;
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> thumbnail_hit(Point point) {
+    if (!thumbnail_layout.visible || !navigator.has_value()) {
+      return std::nullopt;
+    }
+    const RECT panel = thumbnail_panel_rect();
+    POINT native{point.x, point.y};
+    if (PtInRect(&panel, native) == FALSE) {
+      return std::nullopt;
+    }
+    const int thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
+    const int cell_width = thumb + 28;
+    const int cell_height = thumb + 42;
+    const int padding = 14;
+    const int usable_width = (panel.right - panel.left) - padding * 2;
+    const int columns = (std::max)(1, usable_width / cell_width);
+    const int local_x = point.x - panel.left - padding;
+    const int local_y = point.y - panel.top - padding;
+    if (local_x < 0 || local_y < 0) {
+      return std::nullopt;
+    }
+    const int col = local_x / cell_width;
+    const int row = local_y / cell_height;
+    if (col < 0 || col >= columns) {
+      return std::nullopt;
+    }
+    const std::size_t index = static_cast<std::size_t>(row * columns + col);
+    if (index >= navigator->items().size()) {
+      return std::nullopt;
+    }
+    return index;
   }
 
   void open_with_dialog() {
@@ -714,15 +885,13 @@ struct MainWindow::Impl {
       return;
     }
 
-    RECT client{};
-    if (GetClientRect(window, &client)) {
-      const LONG width = client.right - client.left;
-      const LONG height = client.bottom - client.top;
-      if (width > 0 && height > 0) {
-        transform.fit(displayed_size,
-                      {static_cast<std::uint32_t>(width),
-                       static_cast<std::uint32_t>(height)});
-      }
+    RECT client = image_area_rect();
+    const LONG width = client.right - client.left;
+    const LONG height = client.bottom - client.top;
+    if (width > 0 && height > 0) {
+      transform.fit(displayed_size,
+                    {static_cast<std::uint32_t>(width),
+                     static_cast<std::uint32_t>(height)});
     }
   }
 
@@ -913,6 +1082,8 @@ struct MainWindow::Impl {
     context->cancellation.cancel();
     context->cancellation = core::CancellationSource{};
     stop_animation();
+    toolbar_visible = false;
+    KillTimer(window, toolbar_hide_timer_id);
     prefetches.clear();
     navigator.reset();
 
@@ -1173,8 +1344,8 @@ struct MainWindow::Impl {
   }
 
   void toggle_thumbnail_preview() {
-    thumbnail_layout.toggle_preview();
-    update_child_layout();
+    thumbnail_layout.preview_visible = false;
+    InvalidateRect(window, nullptr, FALSE);
   }
 
   void grow_thumbnails() {
@@ -1217,12 +1388,9 @@ struct MainWindow::Impl {
         cycle_thumbnail_dock();
         return;
       case 8:
-        toggle_thumbnail_preview();
-        return;
-      case 9:
         grow_thumbnails();
         return;
-      case 10:
+      case 9:
         shrink_thumbnails();
         return;
       default:
@@ -1231,7 +1399,7 @@ struct MainWindow::Impl {
   }
 
   void end_pan() noexcept {
-    resizing_preview_splitter = false;
+    resizing_thumbnail_panel = false;
     pan.end();
     if (GetCapture() == window) {
       ReleaseCapture();
@@ -1410,10 +1578,6 @@ struct MainWindow::Impl {
   }
 
   void cleanup_gdi_resources() noexcept {
-    if (toolbar_font != nullptr) {
-      DeleteObject(toolbar_font);
-      toolbar_font = nullptr;
-    }
   }
 };
 
@@ -1545,6 +1709,7 @@ LRESULT MainWindow::handle_message(
           draw_succeeded = draw_result.value();
         }
       }
+      impl_->draw_overlays(paint.hdc);
 
       EndPaint(impl_->window, &paint);
       if (draw_error.has_value()) {
@@ -1671,50 +1836,6 @@ LRESULT MainWindow::handle_message(
       return 0;
     }
 
-    case WM_COMMAND: {
-      const UINT_PTR id = LOWORD(wparam);
-      const UINT notification = HIWORD(wparam);
-      if (id >= toolbar_first_id &&
-          id < toolbar_first_id + toolbar_buttons.size() &&
-          notification == BN_CLICKED) {
-        impl_->invoke_toolbar(id);
-        return 0;
-      }
-      if (id == thumb_list_id && notification == LBN_SELCHANGE &&
-          !impl_->syncing_thumbnail_selection) {
-        const LRESULT selected =
-            SendMessageW(impl_->thumbnail_list, LB_GETCURSEL, 0, 0);
-        if (selected != LB_ERR) {
-          impl_->select_thumbnail(static_cast<std::size_t>(selected));
-        }
-        return 0;
-      }
-      break;
-    }
-
-    case WM_DRAWITEM: {
-      const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
-      if (item == nullptr) {
-        break;
-      }
-      if (item->CtlID >= toolbar_first_id &&
-          item->CtlID < toolbar_first_id + toolbar_buttons.size()) {
-        impl_->draw_toolbar_button(*item);
-        return TRUE;
-      }
-      if (item->CtlID == preview_box_id) {
-        impl_->draw_preview_item(*item);
-        return TRUE;
-      }
-      if (item->CtlID != thumb_list_id ||
-          item->itemID == static_cast<UINT>(-1)) {
-        break;
-      }
-
-      impl_->draw_thumbnail_item(*item);
-      return TRUE;
-    }
-
     case WM_MOUSEWHEEL: {
       const int steps = impl_->wheel_delta.consume(
           GET_WHEEL_DELTA_WPARAM(wparam));
@@ -1726,19 +1847,34 @@ LRESULT MainWindow::handle_message(
       return 0;
     }
 
-    case WM_LBUTTONDOWN:
-      if (impl_->begin_preview_resize(
-              {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+    case WM_LBUTTONDOWN: {
+      const Point point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+      if (const auto toolbar_index = impl_->toolbar_hit(point)) {
+        impl_->invoke_toolbar(toolbar_first_id + *toolbar_index);
         return 0;
       }
-      impl_->pan.begin(
-          {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+      if (impl_->begin_thumbnail_panel_resize(point)) {
+        return 0;
+      }
+      if (const auto thumbnail_index = impl_->thumbnail_hit(point)) {
+        impl_->select_thumbnail(*thumbnail_index);
+        return 0;
+      }
+      RECT image_area = impl_->image_area_rect();
+      POINT native{point.x, point.y};
+      if (PtInRect(&image_area, native) != FALSE) {
+        impl_->toolbar_visible = true;
+        SetTimer(impl_->window, toolbar_hide_timer_id, 3000, nullptr);
+        InvalidateRect(impl_->window, nullptr, FALSE);
+      }
+      impl_->pan.begin(point);
       SetCapture(impl_->window);
       return 0;
+    }
 
     case WM_MOUSEMOVE:
-      if (impl_->resizing_preview_splitter) {
-        impl_->resize_preview_to(
+      if (impl_->resizing_thumbnail_panel) {
+        impl_->resize_thumbnail_panel_to(
             {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
         return 0;
       }
@@ -1833,6 +1969,12 @@ LRESULT MainWindow::handle_message(
     case WM_TIMER:
       if (wparam == animation_timer_id) {
         impl_->advance_animation();
+        return 0;
+      }
+      if (wparam == toolbar_hide_timer_id) {
+        KillTimer(impl_->window, toolbar_hide_timer_id);
+        impl_->toolbar_visible = false;
+        InvalidateRect(impl_->window, nullptr, FALSE);
         return 0;
       }
       break;

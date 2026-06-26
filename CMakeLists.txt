@@ -79,6 +79,7 @@ if(WIN32)
     viewer_render
     comdlg32
     comctl32
+    msimg32
     shell32
     ole32
   )

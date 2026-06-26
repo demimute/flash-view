@@ -5,11 +5,11 @@
 namespace viewer::core {
 namespace {
 
-TEST(ThumbnailLayoutTest, DefaultsToHiddenBottomDockWithPreview) {
+TEST(ThumbnailLayoutTest, DefaultsToHiddenBottomDockWithoutPreview) {
   const ThumbnailLayoutState layout;
 
   EXPECT_FALSE(layout.visible);
-  EXPECT_TRUE(layout.preview_visible);
+  EXPECT_FALSE(layout.preview_visible);
   EXPECT_EQ(layout.dock, ThumbnailDock::bottom);
   EXPECT_EQ(layout.thumbnail_size, 128U);
 }
@@ -39,6 +39,19 @@ TEST(ThumbnailLayoutTest, ClampsThumbnailSize) {
     layout.grow_thumbnails();
   }
   EXPECT_EQ(layout.thumbnail_size, 320U);
+}
+
+TEST(ThumbnailLayoutTest, ClampsPanelExtent) {
+  ThumbnailLayoutState layout;
+
+  layout.resize_panel(20);
+  EXPECT_EQ(layout.panel_extent, 96U);
+
+  layout.resize_panel(320);
+  EXPECT_EQ(layout.panel_extent, 320U);
+
+  layout.resize_panel(900);
+  EXPECT_EQ(layout.panel_extent, 520U);
 }
 
 }  // namespace
