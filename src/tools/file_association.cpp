@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj_core.h>
 
 #include <array>
 #include <filesystem>
