@@ -52,6 +52,7 @@ constexpr UINT navigator_ready_message = WM_APP + 2;
 constexpr UINT_PTR animation_timer_id = 2000;
 constexpr UINT_PTR toolbar_first_id = 3000;
 constexpr UINT_PTR toolbar_hide_timer_id = 2001;
+constexpr UINT toolbar_hide_delay_ms = 6000;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
 
@@ -367,6 +368,27 @@ struct MainWindow::Impl {
     return true;
   }
 
+  [[nodiscard]] bool is_on_thumbnail_splitter(Point point) const {
+    const auto splitter = thumbnail_splitter_rect();
+    if (!splitter.has_value()) {
+      return false;
+    }
+    POINT native_point{point.x, point.y};
+    return PtInRect(&*splitter, native_point) != FALSE;
+  }
+
+  [[nodiscard]] LPCWSTR thumbnail_resize_cursor() const noexcept {
+    switch (thumbnail_layout.dock) {
+      case core::ThumbnailDock::bottom:
+      case core::ThumbnailDock::top:
+        return IDC_SIZENS;
+      case core::ThumbnailDock::left:
+      case core::ThumbnailDock::right:
+        return IDC_SIZEWE;
+    }
+    return IDC_ARROW;
+  }
+
   void resize_thumbnail_panel_to(Point point) {
     if (!resizing_thumbnail_panel) {
       return;
@@ -574,29 +596,29 @@ struct MainWindow::Impl {
 
   [[nodiscard]] RECT toolbar_rect() const noexcept {
     RECT image = image_area_rect();
-    constexpr int button = 40;
-    constexpr int gap = 8;
-    constexpr int padding = 10;
-    constexpr int height = 52;
+    constexpr int button = 80;
+    constexpr int gap = 16;
+    constexpr int padding = 20;
+    constexpr int height = 104;
     const int width = padding * 2 +
                       static_cast<int>(toolbar_buttons.size()) * button +
                       static_cast<int>(toolbar_buttons.size() - 1) * gap;
     const int image_width = image.right - image.left;
     int left = image.left + (image_width - width) / 2;
     left = (std::max)(static_cast<int>(image.left) + 12, left);
-    int top = image.bottom - height - 22;
+    int top = image.bottom - height - 44;
     top = (std::max)(static_cast<int>(image.top) + 12, top);
     return RECT{left, top, left + width, top + height};
   }
 
   void layout_toolbar_buttons() noexcept {
     const RECT bar = toolbar_rect();
-    constexpr int button = 40;
-    constexpr int gap = 8;
-    int left = bar.left + 10;
+    constexpr int button = 80;
+    constexpr int gap = 16;
+    int left = bar.left + 20;
     for (std::size_t index = 0; index < toolbar_button_rects.size(); ++index) {
       toolbar_button_rects[index] =
-          RECT{left, bar.top + 6, left + button, bar.top + 46};
+          RECT{left, bar.top + 12, left + button, bar.top + 92};
       left += button + gap;
     }
   }
@@ -1950,7 +1972,8 @@ LRESULT MainWindow::handle_message(
       POINT native{point.x, point.y};
       if (PtInRect(&image_area, native) != FALSE) {
         impl_->toolbar_visible = true;
-        SetTimer(impl_->window, toolbar_hide_timer_id, 3000, nullptr);
+        SetTimer(impl_->window, toolbar_hide_timer_id, toolbar_hide_delay_ms,
+                 nullptr);
         InvalidateRect(impl_->window, nullptr, FALSE);
       }
       impl_->pan.begin(point);
@@ -1962,6 +1985,11 @@ LRESULT MainWindow::handle_message(
       if (impl_->resizing_thumbnail_panel) {
         impl_->resize_thumbnail_panel_to(
             {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+        return 0;
+      }
+      if (impl_->is_on_thumbnail_splitter(
+              {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)})) {
+        SetCursor(LoadCursorW(nullptr, impl_->thumbnail_resize_cursor()));
         return 0;
       }
       if (const std::optional<PanDelta> delta = impl_->pan.move_to(
@@ -2033,6 +2061,18 @@ LRESULT MainWindow::handle_message(
 
         case KeyAction::none:
           break;
+      }
+      break;
+
+    case WM_SETCURSOR:
+      if (LOWORD(lparam) == HTCLIENT) {
+        POINT cursor{};
+        if (GetCursorPos(&cursor) != FALSE &&
+            ScreenToClient(impl_->window, &cursor) != FALSE &&
+            impl_->is_on_thumbnail_splitter({cursor.x, cursor.y})) {
+          SetCursor(LoadCursorW(nullptr, impl_->thumbnail_resize_cursor()));
+          return TRUE;
+        }
       }
       break;
 

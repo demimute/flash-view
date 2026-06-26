@@ -9,6 +9,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -226,81 +227,97 @@ struct D3dRenderer::Impl {
     const float top = static_cast<float>(rect.top);
     const float right = static_cast<float>(rect.right);
     const float bottom = static_cast<float>(rect.bottom);
+    const float unit =
+        (std::min)((right - left) / 40.0F, (bottom - top) / 40.0F);
+    const auto sx = [left, unit](float value) {
+      return left + value * unit;
+    };
+    const auto sy = [top, unit](float value) {
+      return top + value * unit;
+    };
     const float cx = (left + right) / 2.0F;
     const float cy = (top + bottom) / 2.0F;
 
     switch (icon) {
       case 0:
-        d2d_context->DrawRectangle(D2D1::RectF(left + 8, top + 16, right - 8,
-                                               bottom - 9),
-                                   brush.Get(), 2.0F);
-        d2d_context->DrawLine(D2D1::Point2F(left + 10, top + 16),
-                              D2D1::Point2F(left + 16, top + 11),
-                              brush.Get(), 2.0F);
-        d2d_context->DrawLine(D2D1::Point2F(left + 16, top + 11),
-                              D2D1::Point2F(left + 25, top + 11),
-                              brush.Get(), 2.0F);
+        d2d_context->DrawRectangle(D2D1::RectF(sx(8), sy(16), sx(32),
+                                               sy(31)),
+                                   brush.Get(), 2.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(10), sy(16)),
+                              D2D1::Point2F(sx(16), sy(11)),
+                              brush.Get(), 2.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(16), sy(11)),
+                              D2D1::Point2F(sx(25), sy(11)),
+                              brush.Get(), 2.0F * unit);
         break;
       case 1:
-        d2d_context->DrawLine(D2D1::Point2F(cx + 8, cy - 10),
-                              D2D1::Point2F(cx - 8, cy), brush.Get(), 3.0F);
-        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
-                              D2D1::Point2F(cx + 8, cy + 10),
-                              brush.Get(), 3.0F);
+        d2d_context->DrawLine(D2D1::Point2F(cx + 8 * unit, cy - 10 * unit),
+                              D2D1::Point2F(cx - 8 * unit, cy),
+                              brush.Get(), 3.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8 * unit, cy),
+                              D2D1::Point2F(cx + 8 * unit, cy + 10 * unit),
+                              brush.Get(), 3.0F * unit);
         break;
       case 2:
-        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy - 10),
-                              D2D1::Point2F(cx + 8, cy), brush.Get(), 3.0F);
-        d2d_context->DrawLine(D2D1::Point2F(cx + 8, cy),
-                              D2D1::Point2F(cx - 8, cy + 10),
-                              brush.Get(), 3.0F);
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8 * unit, cy - 10 * unit),
+                              D2D1::Point2F(cx + 8 * unit, cy),
+                              brush.Get(), 3.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(cx + 8 * unit, cy),
+                              D2D1::Point2F(cx - 8 * unit, cy + 10 * unit),
+                              brush.Get(), 3.0F * unit);
         break;
       case 3:
-        d2d_context->DrawRectangle(D2D1::RectF(left + 10, top + 10,
-                                               right - 10, bottom - 10),
-                                   brush.Get(), 2.0F);
+        d2d_context->DrawRectangle(D2D1::RectF(sx(10), sy(10), sx(30), sy(30)),
+                                   brush.Get(), 2.0F * unit);
         break;
       case 4:
-        if (label_text_format) {
-          d2d_context->DrawText(L"1", 1, label_text_format.Get(),
-                                D2D1::RectF(left, top + 2, right, bottom),
-                                brush.Get());
-        }
+        d2d_context->DrawLine(D2D1::Point2F(sx(20), sy(10)),
+                              D2D1::Point2F(sx(20), sy(30)),
+                              brush.Get(), 2.5F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(15), sy(30)),
+                              D2D1::Point2F(sx(25), sy(30)),
+                              brush.Get(), 2.5F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(16), sy(14)),
+                              D2D1::Point2F(sx(20), sy(10)),
+                              brush.Get(), 2.5F * unit);
         break;
       case 5:
-        d2d_context->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 10, 10),
-                                 brush.Get(), 2.0F);
-        d2d_context->DrawLine(D2D1::Point2F(right - 13, cy - 7),
-                              D2D1::Point2F(right - 8, cy),
-                              brush.Get(), 2.0F);
+        d2d_context->DrawEllipse(
+            D2D1::Ellipse(D2D1::Point2F(cx, cy), 10 * unit, 10 * unit),
+            brush.Get(), 2.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(27), cy - 7 * unit),
+                              D2D1::Point2F(sx(32), cy),
+                              brush.Get(), 2.0F * unit);
         break;
       case 6:
         for (int row = 0; row < 3; ++row) {
           for (int col = 0; col < 3; ++col) {
             d2d_context->DrawRectangle(
-                D2D1::RectF(left + 10 + col * 7, top + 10 + row * 7,
-                            left + 15 + col * 7, top + 15 + row * 7),
-                brush.Get(), 1.5F);
+                D2D1::RectF(sx(10 + col * 7), sy(10 + row * 7),
+                            sx(15 + col * 7), sy(15 + row * 7)),
+                brush.Get(), 1.5F * unit);
           }
         }
         break;
       case 7:
-        d2d_context->DrawRectangle(D2D1::RectF(left + 9, top + 9, right - 9,
-                                               bottom - 9),
-                                   brush.Get(), 2.0F);
-        d2d_context->DrawLine(D2D1::Point2F(left + 9, bottom - 17),
-                              D2D1::Point2F(right - 9, bottom - 17),
-                              brush.Get(), 2.0F);
+        d2d_context->DrawRectangle(D2D1::RectF(sx(9), sy(9), sx(31), sy(31)),
+                                   brush.Get(), 2.0F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(sx(9), sy(23)),
+                              D2D1::Point2F(sx(31), sy(23)),
+                              brush.Get(), 2.0F * unit);
         break;
       case 8:
-        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
-                              D2D1::Point2F(cx + 8, cy), brush.Get(), 2.5F);
-        d2d_context->DrawLine(D2D1::Point2F(cx, cy - 8),
-                              D2D1::Point2F(cx, cy + 8), brush.Get(), 2.5F);
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8 * unit, cy),
+                              D2D1::Point2F(cx + 8 * unit, cy),
+                              brush.Get(), 2.5F * unit);
+        d2d_context->DrawLine(D2D1::Point2F(cx, cy - 8 * unit),
+                              D2D1::Point2F(cx, cy + 8 * unit),
+                              brush.Get(), 2.5F * unit);
         break;
       case 9:
-        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
-                              D2D1::Point2F(cx + 8, cy), brush.Get(), 2.5F);
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8 * unit, cy),
+                              D2D1::Point2F(cx + 8 * unit, cy),
+                              brush.Get(), 2.5F * unit);
         break;
       default:
         break;

@@ -6,18 +6,67 @@
 #include <fstream>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace viewer::core {
 namespace {
 
-constexpr std::size_t header_size = 16;
+constexpr std::size_t header_size = 32;
 
 template <std::size_t Size>
 bool begins_with(std::span<const std::byte> bytes,
                  const std::array<std::byte, Size>& signature) noexcept {
   return bytes.size() >= signature.size() &&
          std::equal(signature.begin(), signature.end(), bytes.begin());
+}
+
+bool brand_equals(std::span<const std::byte> bytes,
+                  std::size_t offset,
+                  std::string_view brand) noexcept {
+  return brand.size() == 4 && bytes.size() >= offset + brand.size() &&
+         bytes[offset] == static_cast<std::byte>(brand[0]) &&
+         bytes[offset + 1] == static_cast<std::byte>(brand[1]) &&
+         bytes[offset + 2] == static_cast<std::byte>(brand[2]) &&
+         bytes[offset + 3] == static_cast<std::byte>(brand[3]);
+}
+
+bool is_avif_brand(std::span<const std::byte> bytes,
+                   std::size_t offset) noexcept {
+  return brand_equals(bytes, offset, "avif") ||
+         brand_equals(bytes, offset, "avis");
+}
+
+bool is_heif_brand(std::span<const std::byte> bytes,
+                   std::size_t offset) noexcept {
+  return brand_equals(bytes, offset, "heic") ||
+         brand_equals(bytes, offset, "heix") ||
+         brand_equals(bytes, offset, "hevc") ||
+         brand_equals(bytes, offset, "hevx") ||
+         brand_equals(bytes, offset, "mif1") ||
+         brand_equals(bytes, offset, "msf1");
+}
+
+ImageFormat classify_iso_base_media_format(
+    std::span<const std::byte> bytes) noexcept {
+  if (!brand_equals(bytes, 4, "ftyp")) {
+    return ImageFormat::unknown;
+  }
+  if (is_avif_brand(bytes, 8)) {
+    return ImageFormat::avif;
+  }
+  if (is_heif_brand(bytes, 8)) {
+    return ImageFormat::heif;
+  }
+  for (std::size_t offset = 16; offset + 4 <= bytes.size(); offset += 4) {
+    if (is_avif_brand(bytes, offset)) {
+      return ImageFormat::avif;
+    }
+    if (is_heif_brand(bytes, offset)) {
+      return ImageFormat::heif;
+    }
+  }
+  return ImageFormat::unknown;
 }
 
 [[nodiscard]] Error io_error(std::wstring message) {
@@ -163,14 +212,11 @@ ImageFormat probe_format(std::span<const std::byte> bytes) noexcept {
       bytes[11] == std::byte{'P'}) {
     return ImageFormat::webp;
   }
-  if (bytes.size() >= 12 && bytes[4] == std::byte{'f'} &&
-      bytes[5] == std::byte{'t'} && bytes[6] == std::byte{'y'} &&
-      bytes[7] == std::byte{'p'}) {
-    if (bytes[8] == std::byte{'a'} && bytes[9] == std::byte{'v'} &&
-        bytes[10] == std::byte{'i'} && bytes[11] == std::byte{'f'}) {
-      return ImageFormat::avif;
+  if (bytes.size() >= 12 && brand_equals(bytes, 4, "ftyp")) {
+    const ImageFormat iso_format = classify_iso_base_media_format(bytes);
+    if (iso_format != ImageFormat::unknown) {
+      return iso_format;
     }
-    return ImageFormat::heif;
   }
   if (bytes.size() >= 2 && bytes[0] == std::byte{0xFF} &&
       bytes[1] == std::byte{0x0A}) {

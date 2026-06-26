@@ -97,6 +97,17 @@ TEST(FormatProbeTest, DetectsWebpSignature) {
   EXPECT_EQ(probe_format(bytes), ImageFormat::webp);
 }
 
+TEST(FormatProbeTest, DoesNotClassifyMp4FtypAsHeif) {
+  constexpr std::array bytes{
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x18},
+      std::byte{'f'},  std::byte{'t'},  std::byte{'y'},  std::byte{'p'},
+      std::byte{'i'},  std::byte{'s'},  std::byte{'o'},  std::byte{'m'},
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x02}, std::byte{0x00},
+  };
+
+  EXPECT_EQ(probe_format(bytes), ImageFormat::unknown);
+}
+
 TEST(FormatProbeTest, DetectsArchiveSignatures) {
   constexpr std::array zip{
       std::byte{'P'}, std::byte{'K'}, std::byte{0x03}, std::byte{0x04},
