@@ -583,9 +583,9 @@ struct MainWindow::Impl {
                       static_cast<int>(toolbar_buttons.size() - 1) * gap;
     const int image_width = image.right - image.left;
     int left = image.left + (image_width - width) / 2;
-    left = (std::max)(image.left + 12, left);
+    left = (std::max)(static_cast<int>(image.left) + 12, left);
     int top = image.bottom - height - 22;
-    top = (std::max)(image.top + 12, top);
+    top = (std::max)(static_cast<int>(image.top) + 12, top);
     return RECT{left, top, left + width, top + height};
   }
 
@@ -988,7 +988,7 @@ struct MainWindow::Impl {
     const bool submitted = context->executor.submit(
         priority,
         [context, token, generation, purpose, display_when_ready,
-         cancellation, path, metrics] mutable {
+         cancellation, path, metrics]() mutable {
           if (cancellation.is_cancelled()) {
             return;
           }
