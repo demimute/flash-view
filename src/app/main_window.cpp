@@ -21,6 +21,8 @@
 #include <shellapi.h>
 #include <windowsx.h>
 
+#include "app/resource.h"
+
 #include "viewer/app/input_mapping.h"
 #include "viewer/app/render_failure_policy.h"
 #include "viewer/app/window_state.h"
@@ -1851,9 +1853,11 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
       .style = CS_HREDRAW | CS_VREDRAW,
       .lpfnWndProc = &MainWindow::window_proc,
       .hInstance = instance,
+      .hIcon = LoadIconW(instance, MAKEINTRESOURCEW(ID_APP_ICON)),
       .hCursor = LoadCursorW(nullptr, IDC_ARROW),
       .hbrBackground = nullptr,
       .lpszClassName = window_class_name,
+      .hIconSm = LoadIconW(instance, MAKEINTRESOURCEW(ID_APP_ICON)),
   };
   if (RegisterClassExW(&window_class) == 0 &&
       GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {

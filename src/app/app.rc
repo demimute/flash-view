@@ -1,0 +1,3 @@
+#include "resource.h"
+
+ID_APP_ICON ICON "assets/flash_view.ico"

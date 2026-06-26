@@ -57,6 +57,7 @@ if(WIN32)
 
   add_executable(fast_viewer WIN32
     src/app/app.cpp
+    src/app/app.rc
     src/app/main_window.cpp
     src/app/resource.h
     src/app/winmain.cpp
