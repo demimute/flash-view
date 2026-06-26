@@ -134,5 +134,24 @@ TEST(ImageFrameTest, RejectsStrideThatExceedsUint32) {
   EXPECT_EQ(result.error().code, ErrorCode::resource_limit);
 }
 
+TEST(AnimatedImageTest, RequiresMultipleFramesAndMatchingDelays) {
+  AnimatedImage empty;
+  EXPECT_FALSE(empty.animated());
+
+  AnimatedImage one_frame;
+  one_frame.frames.push_back(ImageFrame{.width = 1, .height = 1, .stride = 4});
+  one_frame.delays_ms.push_back(100);
+  EXPECT_FALSE(one_frame.animated());
+
+  AnimatedImage mismatched;
+  mismatched.frames.push_back(ImageFrame{.width = 1, .height = 1, .stride = 4});
+  mismatched.frames.push_back(ImageFrame{.width = 1, .height = 1, .stride = 4});
+  mismatched.delays_ms.push_back(100);
+  EXPECT_FALSE(mismatched.animated());
+
+  mismatched.delays_ms.push_back(100);
+  EXPECT_TRUE(mismatched.animated());
+}
+
 }  // namespace
 }  // namespace viewer::core

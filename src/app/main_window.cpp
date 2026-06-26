@@ -49,6 +49,7 @@ constexpr wchar_t empty_prompt[] =
     L"Drop image here or press O to open.";
 constexpr UINT image_ready_message = WM_APP + 1;
 constexpr UINT navigator_ready_message = WM_APP + 2;
+constexpr UINT_PTR animation_timer_id = 2000;
 constexpr UINT_PTR toolbar_first_id = 3000;
 constexpr UINT_PTR thumb_list_id = 3100;
 constexpr UINT_PTR preview_box_id = 3101;
@@ -73,6 +74,7 @@ struct LoadedImage {
   std::filesystem::path path;
   core::LoadMetrics metrics;
   core::Result<core::ImageFrame> result;
+  std::optional<core::AnimatedImage> animation;
 };
 
 struct LoadedNavigator {
@@ -200,6 +202,7 @@ struct MainWindow::Impl {
   core::PrefetchTracker prefetches;
   WheelDeltaAccumulator wheel_delta;
   PanTracker pan;
+  HFONT toolbar_font = nullptr;
   core::ThumbnailLayoutState thumbnail_layout;
   std::vector<HWND> toolbar;
   HWND thumbnail_list = nullptr;
@@ -209,6 +212,8 @@ struct MainWindow::Impl {
   std::vector<std::filesystem::path> temporary_archive_dirs;
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
+  std::shared_ptr<core::AnimatedImage> current_animation;
+  std::size_t current_animation_index = 0;
 
   [[nodiscard]] std::filesystem::path current_path() const {
     if (navigator.has_value()) {
@@ -240,6 +245,14 @@ struct MainWindow::Impl {
     displayed_size = {};
   }
 
+  void stop_animation() noexcept {
+    if (window != nullptr) {
+      KillTimer(window, animation_timer_id);
+    }
+    current_animation.reset();
+    current_animation_index = 0;
+  }
+
   void set_displayed_frame(std::shared_ptr<core::ImageFrame> frame) {
     displayed_size = {frame->width, frame->height};
     displayed_frame = std::move(frame);
@@ -253,6 +266,7 @@ struct MainWindow::Impl {
   void show_empty_prompt() {
     renderer.clear_image();
     reset_displayed_frame();
+    stop_animation();
     pending_load_debug.reset();
     set_renderer_status_text(empty_prompt);
     InvalidateRect(window, nullptr, FALSE);
@@ -264,13 +278,21 @@ struct MainWindow::Impl {
     }
 
     InitCommonControls();
+    toolbar_font = CreateFontW(
+        17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
     for (const ToolbarButton& spec : toolbar_buttons) {
       HWND button = CreateWindowExW(
           0, L"BUTTON", spec.label,
-          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-          0, 0, 32, 28, window, reinterpret_cast<HMENU>(spec.id),
+          WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+          0, 0, 38, 30, window, reinterpret_cast<HMENU>(spec.id),
           GetModuleHandleW(nullptr), nullptr);
       if (button != nullptr) {
+        if (toolbar_font != nullptr) {
+          SendMessageW(button, WM_SETFONT,
+                       reinterpret_cast<WPARAM>(toolbar_font), TRUE);
+        }
         toolbar.push_back(button);
       }
     }
@@ -302,14 +324,15 @@ struct MainWindow::Impl {
     }
 
     constexpr int toolbar_height = 34;
-    constexpr int button_size = 28;
-    constexpr int button_gap = 4;
+    constexpr int button_width = 38;
+    constexpr int button_height = 30;
+    constexpr int button_gap = 5;
     int x = 6;
     for (HWND button : toolbar) {
-      MoveWindow(button, x, 3, button_size, button_size, TRUE);
+      MoveWindow(button, x, 3, button_width, button_height, TRUE);
       SetWindowPos(button, HWND_TOP, 0, 0, 0, 0,
                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-      x += button_size + button_gap;
+      x += button_width + button_gap;
     }
 
     const bool show_thumbs = thumbnail_layout.visible &&
@@ -446,6 +469,43 @@ struct MainWindow::Impl {
                        (std::max)(100, height - toolbar_height - 120)));
     }
     update_child_layout();
+  }
+
+  void draw_toolbar_button(const DRAWITEMSTRUCT& item) {
+    const bool selected = (item.itemState & ODS_SELECTED) == ODS_SELECTED;
+    const bool focus = (item.itemState & ODS_FOCUS) == ODS_FOCUS;
+    HBRUSH background = CreateSolidBrush(
+        selected ? RGB(64, 92, 128) : RGB(36, 40, 46));
+    FillRect(item.hDC, &item.rcItem, background);
+    DeleteObject(background);
+
+    HPEN border = CreatePen(PS_SOLID, 1,
+                            focus ? RGB(126, 170, 230)
+                                  : RGB(70, 76, 86));
+    HGDIOBJ old_pen = SelectObject(item.hDC, border);
+    HGDIOBJ old_brush = SelectObject(
+        item.hDC, GetStockObject(NULL_BRUSH));
+    RoundRect(item.hDC, item.rcItem.left, item.rcItem.top,
+              item.rcItem.right, item.rcItem.bottom, 8, 8);
+    SelectObject(item.hDC, old_brush);
+    SelectObject(item.hDC, old_pen);
+    DeleteObject(border);
+
+    wchar_t text[32]{};
+    GetWindowTextW(item.hwndItem, text, static_cast<int>(_countof(text)));
+    SetBkMode(item.hDC, TRANSPARENT);
+    SetTextColor(item.hDC, RGB(232, 238, 248));
+    HFONT old_font = nullptr;
+    if (toolbar_font != nullptr) {
+      old_font = reinterpret_cast<HFONT>(
+          SelectObject(item.hDC, toolbar_font));
+    }
+    RECT text_rect = item.rcItem;
+    DrawTextW(item.hDC, text, -1, &text_rect,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    if (old_font != nullptr) {
+      SelectObject(item.hDC, old_font);
+    }
   }
 
   void refresh_thumbnail_items() {
@@ -667,6 +727,9 @@ struct MainWindow::Impl {
   }
 
   bool display_cached(const std::filesystem::path& path) {
+    if (lower_extension(path) == L".gif") {
+      return false;
+    }
     const std::shared_ptr<core::ImageFrame> frame =
         frame_cache.find(path);
     if (!frame) {
@@ -680,10 +743,45 @@ struct MainWindow::Impl {
 
     set_renderer_status_text(L"");
     pending_load_debug.reset();
+    stop_animation();
     set_displayed_frame(frame);
     fit_displayed_frame();
     InvalidateRect(window, nullptr, FALSE);
     return true;
+  }
+
+  void start_animation(std::optional<core::AnimatedImage>&& animation) {
+    stop_animation();
+    if (!animation.has_value() || !animation->animated()) {
+      return;
+    }
+    current_animation = std::make_shared<core::AnimatedImage>(
+        std::move(animation).value());
+    current_animation_index = 0;
+    SetTimer(window, animation_timer_id,
+             current_animation->delays_ms[current_animation_index],
+             nullptr);
+  }
+
+  void advance_animation() {
+    if (!current_animation || !current_animation->animated()) {
+      stop_animation();
+      return;
+    }
+    current_animation_index =
+        (current_animation_index + 1) % current_animation->frames.size();
+    auto frame = std::make_shared<core::ImageFrame>(
+        current_animation->frames[current_animation_index]);
+    auto upload_result = renderer.set_image(*frame);
+    if (!handle_upload_result(upload_result, frame)) {
+      stop_animation();
+      return;
+    }
+    set_displayed_frame(frame);
+    InvalidateRect(window, nullptr, FALSE);
+    SetTimer(window, animation_timer_id,
+             current_animation->delays_ms[current_animation_index],
+             nullptr);
   }
 
   void retain_relevant_frames() {
@@ -731,7 +829,8 @@ struct MainWindow::Impl {
           }
 
           metrics.decode_started = core::LoadMetrics::Clock::now();
-          auto decoded = [&path]() {
+          std::optional<core::AnimatedImage> animation;
+          auto decoded = [&path, &animation]() {
             auto format = core::probe_file_header(path);
             if (!format.has_value()) {
               return core::Result<core::ImageFrame>::failure(
@@ -739,6 +838,23 @@ struct MainWindow::Impl {
             }
 
             const platform::WicDecoder decoder;
+            if (format.value() == core::ImageFormat::gif) {
+              auto animated = decoder.decode_animation(
+                  path, decode_byte_budget);
+              if (animated.has_value() && !animated.value().frames.empty()) {
+                core::ImageFrame first_frame =
+                    animated.value().frames.front();
+                if (animated.value().animated()) {
+                  animation = std::move(animated).value();
+                }
+                return core::Result<core::ImageFrame>::success(
+                    std::move(first_frame));
+              }
+              if (!animated.has_value()) {
+                return core::Result<core::ImageFrame>::failure(
+                    std::move(animated).error());
+              }
+            }
             return decoder.decode(path, decode_byte_budget);
           }();
           metrics.decode_finished = core::LoadMetrics::Clock::now();
@@ -758,6 +874,7 @@ struct MainWindow::Impl {
               .path = path,
               .metrics = metrics,
               .result = std::move(decoded),
+              .animation = std::move(animation),
           });
           static_cast<void>(context->completions.publish(
               payload,
@@ -795,6 +912,7 @@ struct MainWindow::Impl {
 
     context->cancellation.cancel();
     context->cancellation = core::CancellationSource{};
+    stop_animation();
     prefetches.clear();
     navigator.reset();
 
@@ -1290,13 +1408,22 @@ struct MainWindow::Impl {
     }
     temporary_archive_dirs.clear();
   }
+
+  void cleanup_gdi_resources() noexcept {
+    if (toolbar_font != nullptr) {
+      DeleteObject(toolbar_font);
+      toolbar_font = nullptr;
+    }
+  }
 };
 
 MainWindow::MainWindow() : impl_(std::make_unique<Impl>()) {}
 
 MainWindow::~MainWindow() {
   impl_->shutdown_async();
+  impl_->stop_animation();
   impl_->cleanup_temporary_archives();
+  impl_->cleanup_gdi_resources();
   if (impl_->window != nullptr && IsWindow(impl_->window)) {
     DestroyWindow(impl_->window);
   }
@@ -1505,6 +1632,7 @@ LRESULT MainWindow::handle_message(
       impl_->set_displayed_frame(frame);
       impl_->fit_displayed_frame();
       impl_->update_preview_label();
+      impl_->start_animation(std::move(loaded->animation));
       impl_->pending_load_debug = PendingLoadDebugInfo{
           .path = loaded->path,
           .metrics = loaded->metrics,
@@ -1568,6 +1696,11 @@ LRESULT MainWindow::handle_message(
       const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
       if (item == nullptr) {
         break;
+      }
+      if (item->CtlID >= toolbar_first_id &&
+          item->CtlID < toolbar_first_id + toolbar_buttons.size()) {
+        impl_->draw_toolbar_button(*item);
+        return TRUE;
       }
       if (item->CtlID == preview_box_id) {
         impl_->draw_preview_item(*item);
@@ -1691,9 +1824,18 @@ LRESULT MainWindow::handle_message(
     case WM_CLOSE:
       impl_->end_pan();
       impl_->shutdown_async();
+      impl_->stop_animation();
       impl_->cleanup_temporary_archives();
+      impl_->cleanup_gdi_resources();
       DestroyWindow(impl_->window);
       return 0;
+
+    case WM_TIMER:
+      if (wparam == animation_timer_id) {
+        impl_->advance_animation();
+        return 0;
+      }
+      break;
 
     case WM_ERASEBKGND:
       return 1;

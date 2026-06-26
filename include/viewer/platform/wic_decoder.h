@@ -20,6 +20,10 @@ class WicDecoder {
   [[nodiscard]] core::Result<core::ImageFrame> decode(
       const std::filesystem::path& path,
       std::size_t byte_budget) const;
+
+  [[nodiscard]] core::Result<core::AnimatedImage> decode_animation(
+      const std::filesystem::path& path,
+      std::size_t byte_budget) const;
 };
 
 }  // namespace viewer::platform

@@ -72,4 +72,13 @@ struct ImageFrame {
   }
 };
 
+struct AnimatedImage {
+  std::vector<ImageFrame> frames;
+  std::vector<std::uint32_t> delays_ms;
+
+  [[nodiscard]] bool animated() const noexcept {
+    return frames.size() > 1 && frames.size() == delays_ms.size();
+  }
+};
+
 }  // namespace viewer::core
