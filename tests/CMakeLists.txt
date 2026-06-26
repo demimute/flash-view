@@ -3,6 +3,7 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(viewer_tests
   app/input_mapping_test.cpp
   app/render_failure_policy_test.cpp
+  app/source_regression_test.cpp
   core/directory_navigator_test.cpp
   core/format_probe_test.cpp
   core/image_types_test.cpp
@@ -26,6 +27,9 @@ if(WIN32)
 endif()
 
 target_compile_features(viewer_tests PRIVATE cxx_std_20)
+target_compile_definitions(viewer_tests PRIVATE
+  "PROJECT_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\""
+)
 target_link_libraries(viewer_tests PRIVATE
   viewer_core
   GTest::gtest_main

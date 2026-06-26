@@ -84,6 +84,32 @@ if(WIN32)
     shell32
     ole32
   )
+
+  foreach(association_tool IN ITEMS FlashViewAssociate FlashViewUnassociate)
+    add_executable(${association_tool} WIN32
+      src/tools/file_association.cpp
+      src/app/app.rc
+      src/app/resource.h
+    )
+    target_compile_features(${association_tool} PRIVATE cxx_std_20)
+    target_compile_definitions(${association_tool} PRIVATE
+      UNICODE
+      _UNICODE
+      WINVER=0x0A00
+      _WIN32_WINNT=0x0A00
+    )
+    target_include_directories(${association_tool} PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/app"
+    )
+    viewer_enable_warnings(${association_tool})
+    target_link_libraries(${association_tool} PRIVATE
+      advapi32
+      shell32
+    )
+  endforeach()
+  target_compile_definitions(FlashViewUnassociate PRIVATE
+    FLASHVIEW_UNASSOCIATE
+  )
 endif()
 
 if(BUILD_TESTING)

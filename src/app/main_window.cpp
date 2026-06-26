@@ -614,8 +614,9 @@ struct MainWindow::Impl {
         return;
 
       case ThumbnailBrowserEntryKind::image:
+        const std::filesystem::path selected_path = entry.path;
         clear_thumbnail_browser_directory();
-        open_path(entry.path);
+        open_path(selected_path);
         return;
       }
   }
