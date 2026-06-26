@@ -307,6 +307,8 @@ struct MainWindow::Impl {
     int x = 6;
     for (HWND button : toolbar) {
       MoveWindow(button, x, 3, button_size, button_size, TRUE);
+      SetWindowPos(button, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       x += button_size + button_gap;
     }
 
@@ -360,10 +362,14 @@ struct MainWindow::Impl {
     MoveWindow(thumbnail_list, list_rect.left, list_rect.top,
                list_rect.right - list_rect.left,
                list_rect.bottom - list_rect.top, TRUE);
+    SetWindowPos(thumbnail_list, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     if (preview_box != nullptr && thumbnail_layout.preview_visible) {
       MoveWindow(preview_box, preview_rect.left, preview_rect.top,
                  preview_rect.right - preview_rect.left,
                  preview_rect.bottom - preview_rect.top, TRUE);
+      SetWindowPos(preview_box, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
     SendMessageW(thumbnail_list, LB_SETITEMHEIGHT, 0,
                  static_cast<LPARAM>(thumbnail_layout.thumbnail_size + 24));
@@ -1323,7 +1329,8 @@ bool MainWindow::create(HINSTANCE instance, int show_command) {
   }
 
   const HWND window = CreateWindowExW(
-      0, window_class_name, window_title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+      0, window_class_name, window_title,
+      WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
       CW_USEDEFAULT, 1200, 800, nullptr, nullptr, instance, this);
   if (window == nullptr) {
     return false;
