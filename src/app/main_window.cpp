@@ -618,7 +618,6 @@ struct MainWindow::Impl {
         open_path(entry.path);
         return;
       }
-    }
   }
 
   [[nodiscard]] const std::vector<ThumbnailBrowserEntry>& thumbnail_entries() {
