@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -51,12 +52,16 @@ constexpr wchar_t empty_prompt[] =
     L"Drop image here or press O to open.";
 constexpr UINT image_ready_message = WM_APP + 1;
 constexpr UINT navigator_ready_message = WM_APP + 2;
+constexpr UINT thumbnail_ready_message = WM_APP + 3;
 constexpr UINT_PTR animation_timer_id = 2000;
 constexpr UINT_PTR toolbar_first_id = 3000;
 constexpr UINT_PTR toolbar_hide_timer_id = 2001;
 constexpr UINT toolbar_hide_delay_ms = 6000;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
+constexpr std::size_t thumbnail_decode_byte_budget =
+    std::size_t{16} * std::size_t{1024} * std::size_t{1024};
+constexpr std::size_t max_thumbnail_cache_entries = 768;
 
 std::uint64_t next_instance_token() noexcept {
   static std::atomic_uint64_t next{1};
@@ -86,6 +91,14 @@ struct LoadedNavigator {
   core::Result<core::DirectoryNavigator> result;
 };
 
+struct LoadedThumbnail {
+  std::uint64_t instance_token;
+  std::uint64_t generation;
+  std::filesystem::path path;
+  std::wstring cache_key;
+  core::Result<core::ImageFrame> result;
+};
+
 struct PendingLoadDebugInfo {
   std::filesystem::path path;
   core::LoadMetrics metrics;
@@ -100,6 +113,7 @@ struct AsyncLoadContext {
 
   core::LoadGeneration generation;
   core::LoadGeneration scan_generation;
+  core::LoadGeneration thumbnail_generation;
   core::CancellationSource cancellation;
   core::PriorityExecutor executor;
   core::CompletionGate<HWND, std::uint64_t> completions;
@@ -223,6 +237,7 @@ struct MainWindow::Impl {
   std::vector<std::filesystem::path> temporary_archive_dirs;
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
+  std::unordered_set<std::wstring> thumbnail_requests_in_flight;
   std::shared_ptr<core::AnimatedImage> current_animation;
   std::size_t current_animation_index = 0;
 
@@ -460,6 +475,13 @@ struct MainWindow::Impl {
       return;
     }
 
+    if (!same_directory) {
+      if (async_load) {
+        static_cast<void>(async_load->thumbnail_generation.begin());
+      }
+      thumbnail_requests_in_flight.clear();
+    }
+
     thumbnail_entries_cache.clear();
     thumbnail_entries_directory = directory;
     thumbnail_entries_dirty = false;
@@ -575,6 +597,23 @@ struct MainWindow::Impl {
     thumbnail_entries_dirty = true;
   }
 
+  void keep_thumbnail_directory_for_image(const std::filesystem::path& path) {
+    if (path.empty() || !path.has_parent_path()) {
+      return;
+    }
+
+    const std::filesystem::path directory = path.parent_path();
+    const std::filesystem::path current_directory = thumbnail_directory();
+    if (!current_directory.empty() &&
+        core::paths_match(current_directory, directory)) {
+      return;
+    }
+
+    thumbnail_browser_directory = directory;
+    thumbnail_scroll_offset = 0;
+    thumbnail_entries_dirty = true;
+  }
+
   [[nodiscard]] bool selected_thumbnail_image(
       const std::filesystem::path& path) const {
     const std::filesystem::path current = current_path();
@@ -615,7 +654,6 @@ struct MainWindow::Impl {
 
       case ThumbnailBrowserEntryKind::image:
         const std::filesystem::path selected_path = entry.path;
-        clear_thumbnail_browser_directory();
         open_path(selected_path);
         return;
       }
@@ -707,10 +745,79 @@ struct MainWindow::Impl {
         cached != thumbnail_cache.end()) {
       return cached->second;
     }
-    if (const auto cached_frame = frame_cache.find(path)) {
-      return cached_frame;
-    }
     return {};
+  }
+
+  void trim_thumbnail_cache() {
+    while (thumbnail_cache.size() > max_thumbnail_cache_entries) {
+      thumbnail_cache.erase(thumbnail_cache.begin());
+    }
+  }
+
+  void request_thumbnail(const std::filesystem::path& path,
+                         int requested_edge,
+                         core::Priority priority) {
+    if (path.empty() || requested_edge <= 0) {
+      return;
+    }
+    if (cached_thumbnail_frame_for(path)) {
+      return;
+    }
+
+    const std::wstring key = path.wstring();
+    if (thumbnail_requests_in_flight.contains(key)) {
+      return;
+    }
+
+    const std::shared_ptr<AsyncLoadContext> context = async_load;
+    if (window == nullptr || !context) {
+      return;
+    }
+
+    const std::uint64_t generation = context->thumbnail_generation.current();
+    const std::uint64_t token = instance_token;
+    const std::uint32_t max_edge =
+        static_cast<std::uint32_t>((std::max)(requested_edge, 1));
+    thumbnail_requests_in_flight.insert(key);
+
+    const bool submitted = context->executor.submit(
+        priority,
+        [context, token, generation, path, key, max_edge]() mutable {
+          if (!context->thumbnail_generation.is_current(generation)) {
+            return;
+          }
+
+          const platform::WicDecoder decoder;
+          auto decoded = decoder.decode_thumbnail(
+              path, max_edge, thumbnail_decode_byte_budget);
+
+          if (!context->thumbnail_generation.is_current(generation)) {
+            return;
+          }
+
+          auto payload = std::make_unique<LoadedThumbnail>(LoadedThumbnail{
+              .instance_token = token,
+              .generation = generation,
+              .path = path,
+              .cache_key = key,
+              .result = std::move(decoded),
+          });
+          static_cast<void>(context->completions.publish(
+              payload,
+              [](HWND target, std::uint64_t gate_token,
+                 LoadedThumbnail* loaded) {
+                if (loaded->instance_token != gate_token) {
+                  return false;
+                }
+                return PostMessageW(
+                           target, thumbnail_ready_message, 0,
+                           reinterpret_cast<LPARAM>(loaded)) != FALSE;
+              }));
+        });
+
+    if (!submitted) {
+      thumbnail_requests_in_flight.erase(key);
+    }
   }
 
   [[nodiscard]] std::shared_ptr<core::ImageFrame> thumbnail_frame_for(
@@ -1071,7 +1178,10 @@ struct MainWindow::Impl {
       FillRect(hdc, &cell, selected_brush);
       DeleteObject(selected_brush);
 
-      const auto frame = thumbnail_frame_for(items[index]);
+      const auto frame = cached_thumbnail_frame_for(items[index]);
+      if (!frame) {
+        request_thumbnail(items[index], thumb, core::Priority::visible_thumbnail);
+      }
       if (frame && !frame->pixels.empty()) {
         BITMAPINFO bitmap_info{};
         bitmap_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -1159,9 +1269,24 @@ struct MainWindow::Impl {
       }
 
       const auto& entries = thumbnail_entries();
-      overlay.thumbnails.reserve((std::min)(entries.size(), std::size_t{128}));
+      const int first_row = (std::max)(
+          0, (thumbnail_scroll_offset - metrics.padding) /
+                 (std::max)(1, metrics.cell_height));
+      const int last_row = (std::min)(
+          metrics.rows,
+          (thumbnail_scroll_offset + metrics.viewport_height -
+           metrics.padding) /
+                  (std::max)(1, metrics.cell_height) +
+              2);
+      const std::size_t first_index =
+          static_cast<std::size_t>(first_row * metrics.columns);
+      const std::size_t end_index = (std::min)(
+          entries.size(),
+          static_cast<std::size_t>(last_row * metrics.columns));
+      overlay.thumbnails.reserve(
+          (std::min)(end_index - first_index, std::size_t{128}));
 
-      for (std::size_t index = 0; index < entries.size(); ++index) {
+      for (std::size_t index = first_index; index < end_index; ++index) {
         const auto& entry = entries[index];
         const int row = static_cast<int>(index) / metrics.columns;
         const int col = static_cast<int>(index) % metrics.columns;
@@ -1189,9 +1314,11 @@ struct MainWindow::Impl {
         const auto frame =
             !is_image
                 ? nullptr
-                : (resizing_thumbnail_panel
-                       ? cached_thumbnail_frame_for(entry.path)
-                       : thumbnail_frame_for(entry.path));
+                : cached_thumbnail_frame_for(entry.path);
+        if (is_image && !frame && !resizing_thumbnail_panel) {
+          request_thumbnail(entry.path, metrics.thumb,
+                            core::Priority::visible_thumbnail);
+        }
         if (frame && frame->width > 0 && frame->height > 0) {
           const double source_aspect =
               static_cast<double>(frame->width) /
@@ -1533,9 +1660,8 @@ struct MainWindow::Impl {
     toolbar_visible = false;
     KillTimer(window, toolbar_hide_timer_id);
     prefetches.clear();
+    keep_thumbnail_directory_for_image(path);
     navigator.reset();
-    clear_thumbnail_browser_directory();
-    thumbnail_entries_cache.clear();
 
     request_image(path, core::Priority::current_image, true);
     request_directory_scan(path);
@@ -2297,6 +2423,28 @@ LRESULT MainWindow::handle_message(
       impl_->retain_relevant_frames();
       impl_->prefetch_neighbors();
       impl_->refresh_thumbnail_items();
+      return 0;
+    }
+
+    case thumbnail_ready_message: {
+      std::unique_ptr<LoadedThumbnail> loaded(
+          reinterpret_cast<LoadedThumbnail*>(lparam));
+      const std::shared_ptr<AsyncLoadContext> context =
+          impl_->async_load;
+      if (!loaded || loaded->instance_token != impl_->instance_token ||
+          !context ||
+          !context->thumbnail_generation.is_current(loaded->generation)) {
+        return 0;
+      }
+
+      impl_->thumbnail_requests_in_flight.erase(loaded->cache_key);
+      if (loaded->result.has_value()) {
+        auto frame = std::make_shared<core::ImageFrame>(
+            std::move(loaded->result).value());
+        impl_->thumbnail_cache[loaded->cache_key] = std::move(frame);
+        impl_->trim_thumbnail_cache();
+        InvalidateRect(impl_->window, nullptr, FALSE);
+      }
       return 0;
     }
 

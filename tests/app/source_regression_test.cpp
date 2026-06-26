@@ -19,17 +19,65 @@ std::string read_main_window_source() {
 }  // namespace
 
 TEST(SourceRegressionTest,
-     ThumbnailImageOpenCopiesEntryPathBeforeClearingThumbnailCache) {
+     ThumbnailImageOpenCopiesEntryPathBeforeOpeningImage) {
   const std::string source = read_main_window_source();
   ASSERT_FALSE(source.empty());
 
   const std::string expected =
       "case ThumbnailBrowserEntryKind::image:\n"
       "        const std::filesystem::path selected_path = entry.path;\n"
-      "        clear_thumbnail_browser_directory();\n"
       "        open_path(selected_path);";
 
   EXPECT_NE(source.find(expected), std::string::npos);
+}
+
+TEST(SourceRegressionTest, ThumbnailRenderingNeverSynchronouslyDecodesImages) {
+  const std::string source = read_main_window_source();
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_EQ(source.find(": thumbnail_frame_for(entry.path)"),
+            std::string::npos);
+  EXPECT_NE(source.find("request_thumbnail(entry.path"), std::string::npos);
+}
+
+TEST(SourceRegressionTest, ThumbnailCacheLookupDoesNotReturnFullSizeFrames) {
+  const std::string source = read_main_window_source();
+  ASSERT_FALSE(source.empty());
+
+  const std::size_t function_start =
+      source.find("cached_thumbnail_frame_for(");
+  ASSERT_NE(function_start, std::string::npos);
+  const std::size_t function_end =
+      source.find("[[nodiscard]] std::shared_ptr<core::ImageFrame> thumbnail_frame_for",
+                  function_start);
+  ASSERT_NE(function_end, std::string::npos);
+  const std::string function_body =
+      source.substr(function_start, function_end - function_start);
+
+  EXPECT_EQ(function_body.find("frame_cache.find"), std::string::npos);
+}
+
+TEST(SourceRegressionTest, OpeningImageKeepsThumbnailPaneEntriesStable) {
+  const std::string source = read_main_window_source();
+  ASSERT_FALSE(source.empty());
+
+  const std::string forbidden =
+      "navigator.reset();\n"
+      "    clear_thumbnail_browser_directory();\n"
+      "    thumbnail_entries_cache.clear();";
+
+  EXPECT_EQ(source.find(forbidden), std::string::npos);
+}
+
+TEST(SourceRegressionTest, ThumbnailOverlayIteratesVisibleRangeOnly) {
+  const std::string source = read_main_window_source();
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("const std::size_t first_index"),
+            std::string::npos);
+  EXPECT_NE(source.find("const std::size_t end_index"), std::string::npos);
+  EXPECT_NE(source.find("for (std::size_t index = first_index; index < end_index; ++index)"),
+            std::string::npos);
 }
 
 TEST(SourceRegressionTest, AssociationToolDirectlyAssignsImageExtensions) {

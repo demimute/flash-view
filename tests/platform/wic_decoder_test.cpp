@@ -28,6 +28,18 @@ TEST(WicDecoderTest, DecodesPngDimensionsAndStride) {
   EXPECT_EQ(result.value().stride, 4U);
 }
 
+TEST(WicDecoderTest, DecodesThumbnailWithinRequestedEdge) {
+  const WicDecoder decoder;
+
+  const auto result =
+      decoder.decode_thumbnail(fixture_path(L"1x1.png"), 32U, 64U * 1024U);
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_LE(result.value().width, 32U);
+  EXPECT_LE(result.value().height, 32U);
+  EXPECT_EQ(result.value().stride, result.value().width * 4U);
+}
+
 TEST(WicDecoderTest, DecodesPngToPremultipliedBgra) {
   const WicDecoder decoder;
 

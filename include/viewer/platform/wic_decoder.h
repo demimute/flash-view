@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 
 #include "viewer/core/image_frame.h"
@@ -19,6 +20,11 @@ class WicDecoder {
  public:
   [[nodiscard]] core::Result<core::ImageFrame> decode(
       const std::filesystem::path& path,
+      std::size_t byte_budget) const;
+
+  [[nodiscard]] core::Result<core::ImageFrame> decode_thumbnail(
+      const std::filesystem::path& path,
+      std::uint32_t max_edge,
       std::size_t byte_budget) const;
 
   [[nodiscard]] core::Result<core::AnimatedImage> decode_animation(

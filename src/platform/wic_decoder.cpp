@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <algorithm>
 #include <utility>
 
 namespace viewer::platform {
@@ -109,6 +110,62 @@ core::Result<core::ImageFrame> decode_source_frame(
   return core::Result<core::ImageFrame>::success(std::move(output));
 }
 
+core::Result<core::ImageFrame> decode_scaled_source_frame(
+    IWICImagingFactory& factory,
+    IWICBitmapSource& source,
+    std::uint32_t max_edge,
+    std::size_t byte_budget) {
+  UINT width = 0;
+  UINT height = 0;
+  HRESULT result = source.GetSize(&width, &height);
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"WIC could not read thumbnail dimensions.");
+  }
+
+  if (max_edge == 0 || width == 0 || height == 0) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::invalid_format,
+        L"Thumbnail dimensions must be non-zero.");
+  }
+
+  UINT target_width = width;
+  UINT target_height = height;
+  const UINT longest_edge = (std::max)(width, height);
+  if (longest_edge > max_edge) {
+    if (width >= height) {
+      target_width = max_edge;
+      target_height = (std::max)(
+          1U, static_cast<UINT>(
+                  (static_cast<std::uint64_t>(height) * max_edge) / width));
+    } else {
+      target_height = max_edge;
+      target_width = (std::max)(
+          1U, static_cast<UINT>(
+                  (static_cast<std::uint64_t>(width) * max_edge) / height));
+    }
+  }
+
+  ComPtr<IWICBitmapScaler> scaler;
+  result = factory.CreateBitmapScaler(scaler.GetAddressOf());
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::platform_error,
+        L"WIC bitmap scaler creation failed.");
+  }
+
+  result = scaler->Initialize(&source, target_width, target_height,
+                              WICBitmapInterpolationModeFant);
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"WIC thumbnail scaling failed.");
+  }
+
+  return decode_source_frame(factory, *scaler.Get(), byte_budget);
+}
+
 std::uint32_t frame_delay_ms(IWICBitmapFrameDecode& frame) {
   ComPtr<IWICMetadataQueryReader> reader;
   if (FAILED(frame.GetMetadataQueryReader(reader.GetAddressOf()))) {
@@ -191,6 +248,67 @@ core::Result<core::ImageFrame> WicDecoder::decode(
   }
 
   return decode_source_frame(*factory.Get(), *source.Get(), byte_budget);
+}
+
+core::Result<core::ImageFrame> WicDecoder::decode_thumbnail(
+    const std::filesystem::path& path,
+    std::uint32_t max_edge,
+    std::size_t byte_budget) const {
+  ComApartment apartment;
+  if (!apartment.usable()) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::platform_error, L"COM initialization failed.");
+  }
+
+  ComPtr<IWICImagingFactory> factory;
+  HRESULT result = create_factory(factory);
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::platform_error,
+        L"WIC factory creation failed.");
+  }
+
+  ComPtr<IWICBitmapDecoder> decoder;
+  result = factory->CreateDecoderFromFilename(
+      path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
+      decoder.GetAddressOf());
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        detail::is_io_error(result) ? core::ErrorCode::io_error
+                                    : core::ErrorCode::decode_error,
+        L"WIC could not open the image.");
+  }
+
+  ComPtr<IWICBitmapSource> thumbnail;
+  result = decoder->GetThumbnail(thumbnail.GetAddressOf());
+  if (SUCCEEDED(result) && thumbnail) {
+    auto decoded = decode_scaled_source_frame(*factory.Get(), *thumbnail.Get(),
+                                              max_edge, byte_budget);
+    if (decoded.has_value()) {
+      return decoded;
+    }
+  }
+
+  ComPtr<IWICBitmapFrameDecode> source;
+  result = decoder->GetFrame(0, source.GetAddressOf());
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"WIC could not read frame zero.");
+  }
+
+  thumbnail.Reset();
+  result = source->GetThumbnail(thumbnail.GetAddressOf());
+  if (SUCCEEDED(result) && thumbnail) {
+    auto decoded = decode_scaled_source_frame(*factory.Get(), *thumbnail.Get(),
+                                              max_edge, byte_budget);
+    if (decoded.has_value()) {
+      return decoded;
+    }
+  }
+
+  return decode_scaled_source_frame(*factory.Get(), *source.Get(), max_edge,
+                                    byte_budget);
 }
 
 core::Result<core::AnimatedImage> WicDecoder::decode_animation(
