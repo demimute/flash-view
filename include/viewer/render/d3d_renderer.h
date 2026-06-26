@@ -13,6 +13,12 @@
 
 namespace viewer::render {
 
+enum class ThumbnailOverlayKind {
+  image,
+  folder,
+  parent,
+};
+
 struct ToolbarOverlayItem {
   RECT bounds{};
   std::size_t icon = 0;
@@ -23,6 +29,7 @@ struct ThumbnailOverlayItem {
   RECT image_bounds{};
   const core::ImageFrame* frame = nullptr;
   std::wstring label;
+  ThumbnailOverlayKind kind = ThumbnailOverlayKind::image;
   bool selected = false;
 };
 

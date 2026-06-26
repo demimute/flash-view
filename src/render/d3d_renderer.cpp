@@ -324,6 +324,58 @@ struct D3dRenderer::Impl {
     }
   }
 
+  void draw_thumbnail_placeholder(const ThumbnailOverlayItem& item) {
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(d2d_context->CreateSolidColorBrush(
+            item.kind == ThumbnailOverlayKind::parent
+                ? D2D1::ColorF(0xFFD15A, 1.0F)
+                : D2D1::ColorF(0x5EA1FF, 1.0F),
+            brush.ReleaseAndGetAddressOf()))) {
+      return;
+    }
+    const float left = static_cast<float>(item.image_bounds.left);
+    const float top = static_cast<float>(item.image_bounds.top);
+    const float right = static_cast<float>(item.image_bounds.right);
+    const float bottom = static_cast<float>(item.image_bounds.bottom);
+    const float width = right - left;
+    const float height = bottom - top;
+    if (width <= 0.0F || height <= 0.0F) {
+      return;
+    }
+
+    const float tab_height = height * 0.24F;
+    const float tab_width = width * 0.42F;
+    const D2D1_ROUNDED_RECT folder = D2D1::RoundedRect(
+        D2D1::RectF(left + width * 0.08F, top + height * 0.24F,
+                    right - width * 0.08F, bottom - height * 0.12F),
+        width * 0.08F, width * 0.08F);
+    d2d_context->FillRoundedRectangle(folder, brush.Get());
+    d2d_context->FillRectangle(
+        D2D1::RectF(left + width * 0.14F, top + height * 0.16F,
+                    left + width * 0.14F + tab_width,
+                    top + height * 0.16F + tab_height),
+        brush.Get());
+
+    if (item.kind == ThumbnailOverlayKind::parent) {
+      ComPtr<ID2D1SolidColorBrush> arrow;
+      if (SUCCEEDED(d2d_context->CreateSolidColorBrush(
+              D2D1::ColorF(0x18202C, 1.0F),
+              arrow.ReleaseAndGetAddressOf()))) {
+        const float cx = (left + right) / 2.0F;
+        const float cy = (top + bottom) / 2.0F + height * 0.08F;
+        d2d_context->DrawLine(D2D1::Point2F(cx, cy - height * 0.18F),
+                              D2D1::Point2F(cx, cy + height * 0.14F),
+                              arrow.Get(), width * 0.06F);
+        d2d_context->DrawLine(D2D1::Point2F(cx, cy - height * 0.18F),
+                              D2D1::Point2F(cx - width * 0.14F, cy),
+                              arrow.Get(), width * 0.06F);
+        d2d_context->DrawLine(D2D1::Point2F(cx, cy - height * 0.18F),
+                              D2D1::Point2F(cx + width * 0.14F, cy),
+                              arrow.Get(), width * 0.06F);
+      }
+    }
+  }
+
   void draw_overlay(const RenderOverlay& overlay) {
     if (overlay.thumbnails_visible) {
       fill_rect(overlay.thumbnail_panel, D2D1::ColorF(0x14171C, 0.94F));
@@ -364,6 +416,8 @@ struct D3dRenderer::Impl {
                             static_cast<float>(item.image_bounds.bottom)),
                 1.0F, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
           }
+        } else if (item.kind != ThumbnailOverlayKind::image) {
+          draw_thumbnail_placeholder(item);
         }
         ComPtr<ID2D1SolidColorBrush> border;
         if (SUCCEEDED(d2d_context->CreateSolidColorBrush(

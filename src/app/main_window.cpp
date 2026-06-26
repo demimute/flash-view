@@ -207,6 +207,19 @@ struct MainWindow::Impl {
   std::array<RECT, toolbar_buttons.size()> toolbar_button_rects{};
   bool resizing_thumbnail_panel = false;
   int thumbnail_scroll_offset = 0;
+  enum class ThumbnailBrowserEntryKind {
+    parent,
+    folder,
+    image,
+  };
+  struct ThumbnailBrowserEntry {
+    ThumbnailBrowserEntryKind kind = ThumbnailBrowserEntryKind::image;
+    std::filesystem::path path;
+  };
+  std::vector<ThumbnailBrowserEntry> thumbnail_entries_cache;
+  std::filesystem::path thumbnail_entries_directory;
+  std::optional<std::filesystem::path> thumbnail_browser_directory;
+  bool thumbnail_entries_dirty = true;
   std::vector<std::filesystem::path> temporary_archive_dirs;
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
@@ -421,8 +434,196 @@ struct MainWindow::Impl {
   }
 
   void refresh_thumbnail_items() {
+    thumbnail_entries_dirty = true;
     clamp_thumbnail_scroll();
     InvalidateRect(window, nullptr, FALSE);
+  }
+
+  [[nodiscard]] std::filesystem::path thumbnail_directory() const {
+    if (thumbnail_browser_directory.has_value()) {
+      return *thumbnail_browser_directory;
+    }
+    const std::filesystem::path current = current_path();
+    if (!current.empty() && current.has_parent_path()) {
+      return current.parent_path();
+    }
+    return {};
+  }
+
+  void rebuild_thumbnail_entries() {
+    const std::filesystem::path directory = thumbnail_directory();
+    const bool same_directory =
+        thumbnail_entries_directory == directory ||
+        (!thumbnail_entries_directory.empty() && !directory.empty() &&
+         core::paths_match(thumbnail_entries_directory, directory));
+    if (!thumbnail_entries_dirty && same_directory) {
+      return;
+    }
+
+    thumbnail_entries_cache.clear();
+    thumbnail_entries_directory = directory;
+    thumbnail_entries_dirty = false;
+
+    if (directory.empty()) {
+      return;
+    }
+
+    std::error_code error;
+    const auto directory_status = std::filesystem::status(directory, error);
+    if (error || !std::filesystem::is_directory(directory_status)) {
+      return;
+    }
+
+    const std::filesystem::path parent = directory.parent_path();
+    if (!parent.empty() && parent != directory) {
+      thumbnail_entries_cache.push_back(ThumbnailBrowserEntry{
+          .kind = ThumbnailBrowserEntryKind::parent,
+          .path = parent,
+      });
+    }
+
+    std::vector<std::filesystem::path> folders;
+    std::filesystem::directory_iterator iterator(directory, error);
+    const std::filesystem::directory_iterator end;
+    if (!error) {
+      while (iterator != end) {
+        const auto& entry = *iterator;
+        const bool is_directory = entry.is_directory(error);
+        if (error) {
+          error.clear();
+        } else if (is_directory) {
+          folders.push_back(entry.path());
+        }
+        iterator.increment(error);
+        if (error) {
+          error.clear();
+          break;
+        }
+      }
+    }
+
+    const core::NaturalLess natural_less;
+    std::sort(folders.begin(), folders.end(),
+              [&natural_less](const auto& lhs, const auto& rhs) {
+                const auto lhs_name = lhs.filename().wstring();
+                const auto rhs_name = rhs.filename().wstring();
+                if (natural_less(lhs_name, rhs_name)) {
+                  return true;
+                }
+                if (natural_less(rhs_name, lhs_name)) {
+                  return false;
+                }
+                return lhs_name < rhs_name;
+              });
+    for (const auto& folder : folders) {
+      thumbnail_entries_cache.push_back(ThumbnailBrowserEntry{
+          .kind = ThumbnailBrowserEntryKind::folder,
+          .path = folder,
+      });
+    }
+
+    std::vector<std::filesystem::path> images;
+    std::filesystem::directory_iterator image_iterator(directory, error);
+    if (!error) {
+      while (image_iterator != end) {
+        const auto& entry = *image_iterator;
+        const bool is_regular_file = entry.is_regular_file(error);
+        if (error) {
+          error.clear();
+        } else if (is_regular_file &&
+                   core::is_supported_image_extension(entry.path())) {
+          images.push_back(entry.path());
+        }
+        image_iterator.increment(error);
+        if (error) {
+          error.clear();
+          break;
+        }
+      }
+    }
+
+    std::sort(images.begin(), images.end(),
+              [&natural_less](const auto& lhs, const auto& rhs) {
+                const auto lhs_name = lhs.filename().wstring();
+                const auto rhs_name = rhs.filename().wstring();
+                if (natural_less(lhs_name, rhs_name)) {
+                  return true;
+                }
+                if (natural_less(rhs_name, lhs_name)) {
+                  return false;
+                }
+                return lhs_name < rhs_name;
+              });
+    for (const auto& image : images) {
+      thumbnail_entries_cache.push_back(ThumbnailBrowserEntry{
+          .kind = ThumbnailBrowserEntryKind::image,
+          .path = image,
+      });
+    }
+  }
+
+  void set_thumbnail_browser_directory(std::filesystem::path directory) {
+    thumbnail_browser_directory = std::move(directory);
+    thumbnail_scroll_offset = 0;
+    thumbnail_entries_dirty = true;
+    refresh_thumbnail_items();
+  }
+
+  void clear_thumbnail_browser_directory() {
+    thumbnail_browser_directory.reset();
+    thumbnail_scroll_offset = 0;
+    thumbnail_entries_dirty = true;
+  }
+
+  [[nodiscard]] bool selected_thumbnail_image(
+      const std::filesystem::path& path) const {
+    const std::filesystem::path current = current_path();
+    return !current.empty() && core::paths_match(path, current);
+  }
+
+  [[nodiscard]] render::ThumbnailOverlayKind thumbnail_overlay_kind(
+      ThumbnailBrowserEntryKind kind) const noexcept {
+    switch (kind) {
+      case ThumbnailBrowserEntryKind::folder:
+        return render::ThumbnailOverlayKind::folder;
+      case ThumbnailBrowserEntryKind::parent:
+        return render::ThumbnailOverlayKind::parent;
+      case ThumbnailBrowserEntryKind::image:
+        return render::ThumbnailOverlayKind::image;
+    }
+    return render::ThumbnailOverlayKind::image;
+  }
+
+  [[nodiscard]] std::wstring thumbnail_entry_label(
+      const ThumbnailBrowserEntry& entry) const {
+    if (entry.kind == ThumbnailBrowserEntryKind::parent) {
+      return L"..";
+    }
+    std::wstring label = entry.path.filename().wstring();
+    if (label.empty()) {
+      label = entry.path.wstring();
+    }
+    return label;
+  }
+
+  void open_thumbnail_browser_entry(const ThumbnailBrowserEntry& entry) {
+    switch (entry.kind) {
+      case ThumbnailBrowserEntryKind::folder:
+      case ThumbnailBrowserEntryKind::parent:
+        set_thumbnail_browser_directory(entry.path);
+        return;
+
+      case ThumbnailBrowserEntryKind::image:
+        clear_thumbnail_browser_directory();
+        open_path(entry.path);
+        return;
+      }
+    }
+  }
+
+  [[nodiscard]] const std::vector<ThumbnailBrowserEntry>& thumbnail_entries() {
+    rebuild_thumbnail_entries();
+    return thumbnail_entries_cache;
   }
 
   struct ThumbnailGridMetrics {
@@ -438,7 +639,7 @@ struct MainWindow::Impl {
   };
 
   [[nodiscard]] ThumbnailGridMetrics thumbnail_grid_metrics(
-      const RECT& panel) const {
+      const RECT& panel) {
     ThumbnailGridMetrics metrics;
     metrics.thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
     metrics.cell_width = metrics.thumb + 28;
@@ -450,9 +651,7 @@ struct MainWindow::Impl {
     const int usable_width = (std::max)(
         1, panel_width - metrics.padding * 2 - scrollbar_allowance);
     metrics.columns = (std::max)(1, usable_width / metrics.cell_width);
-    const int item_count = navigator.has_value()
-                               ? static_cast<int>(navigator->items().size())
-                               : 0;
+    const int item_count = static_cast<int>(thumbnail_entries().size());
     metrics.rows = item_count == 0
                        ? 0
                        : (item_count + metrics.columns - 1) / metrics.columns;
@@ -464,7 +663,7 @@ struct MainWindow::Impl {
   }
 
   void clamp_thumbnail_scroll() {
-    if (!thumbnail_layout.visible || !navigator.has_value()) {
+    if (!thumbnail_layout.visible || thumbnail_directory().empty()) {
       thumbnail_scroll_offset = 0;
       return;
     }
@@ -484,7 +683,8 @@ struct MainWindow::Impl {
   }
 
   bool scroll_thumbnail_panel(int steps) {
-    if (steps == 0 || !thumbnail_layout.visible || !navigator.has_value()) {
+    if (steps == 0 || !thumbnail_layout.visible ||
+        thumbnail_directory().empty()) {
       return false;
     }
     const ThumbnailGridMetrics metrics =
@@ -916,7 +1116,7 @@ struct MainWindow::Impl {
     overlay.image_viewport_visible = true;
     overlay.image_viewport = image_area_rect();
 
-    if (thumbnail_layout.visible && navigator.has_value()) {
+    if (thumbnail_layout.visible && !thumbnail_directory().empty()) {
       clamp_thumbnail_scroll();
       const RECT panel = thumbnail_panel_rect();
       overlay.thumbnails_visible = true;
@@ -958,10 +1158,11 @@ struct MainWindow::Impl {
         };
       }
 
-      const auto& items = navigator->items();
-      overlay.thumbnails.reserve((std::min)(items.size(), std::size_t{128}));
+      const auto& entries = thumbnail_entries();
+      overlay.thumbnails.reserve((std::min)(entries.size(), std::size_t{128}));
 
-      for (std::size_t index = 0; index < items.size(); ++index) {
+      for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto& entry = entries[index];
         const int row = static_cast<int>(index) / metrics.columns;
         const int col = static_cast<int>(index) % metrics.columns;
         RECT cell{
@@ -983,9 +1184,14 @@ struct MainWindow::Impl {
         RECT image_rect{cell.left + 8, cell.top + 6,
                         cell.left + 8 + metrics.thumb,
                         cell.top + 6 + metrics.thumb};
-        const auto frame = resizing_thumbnail_panel
-                               ? cached_thumbnail_frame_for(items[index])
-                               : thumbnail_frame_for(items[index]);
+        const bool is_image =
+            entry.kind == ThumbnailBrowserEntryKind::image;
+        const auto frame =
+            !is_image
+                ? nullptr
+                : (resizing_thumbnail_panel
+                       ? cached_thumbnail_frame_for(entry.path)
+                       : thumbnail_frame_for(entry.path));
         if (frame && frame->width > 0 && frame->height > 0) {
           const double source_aspect =
               static_cast<double>(frame->width) /
@@ -1008,12 +1214,17 @@ struct MainWindow::Impl {
           image_rect = RECT{left, top, left + draw_width, top + draw_height};
         }
 
+        const render::ThumbnailOverlayKind overlay_kind =
+            thumbnail_overlay_kind(entry.kind);
+        std::wstring label = thumbnail_entry_label(entry);
+
         overlay.thumbnails.push_back(render::ThumbnailOverlayItem{
             .cell = cell,
             .image_bounds = image_rect,
             .frame = frame.get(),
-            .label = items[index].filename().wstring(),
-            .selected = index == navigator->current_index(),
+            .label = std::move(label),
+            .kind = overlay_kind,
+            .selected = is_image && selected_thumbnail_image(entry.path),
         });
       }
     }
@@ -1050,7 +1261,7 @@ struct MainWindow::Impl {
   }
 
   [[nodiscard]] std::optional<std::size_t> thumbnail_hit(Point point) {
-    if (!thumbnail_layout.visible || !navigator.has_value()) {
+    if (!thumbnail_layout.visible || thumbnail_directory().empty()) {
       return std::nullopt;
     }
     const RECT panel = thumbnail_panel_rect();
@@ -1072,7 +1283,7 @@ struct MainWindow::Impl {
     }
     const std::size_t index =
         static_cast<std::size_t>(row * metrics.columns + col);
-    if (index >= navigator->items().size()) {
+    if (index >= thumbnail_entries().size()) {
       return std::nullopt;
     }
     return index;
@@ -1323,6 +1534,8 @@ struct MainWindow::Impl {
     KillTimer(window, toolbar_hide_timer_id);
     prefetches.clear();
     navigator.reset();
+    clear_thumbnail_browser_directory();
+    thumbnail_entries_cache.clear();
 
     request_image(path, core::Priority::current_image, true);
     request_directory_scan(path);
@@ -1547,6 +1760,7 @@ struct MainWindow::Impl {
       return;
     }
     static_cast<void>(navigator->previous());
+    clear_thumbnail_browser_directory();
     show_current_or_request();
     refresh_thumbnail_items();
   }
@@ -1556,16 +1770,18 @@ struct MainWindow::Impl {
       return;
     }
     static_cast<void>(navigator->next());
+    clear_thumbnail_browser_directory();
     show_current_or_request();
     refresh_thumbnail_items();
   }
 
   void select_thumbnail(std::size_t index) {
-    if (!navigator.has_value()) {
+    const auto& entries = thumbnail_entries();
+    if (index >= entries.size()) {
       return;
     }
-    static_cast<void>(navigator->select(index));
-    show_current_or_request();
+
+    open_thumbnail_browser_entry(entries[index]);
     update_preview_label();
   }
 
@@ -2077,6 +2293,7 @@ LRESULT MainWindow::handle_message(
       }
 
       impl_->navigator = std::move(navigator);
+      impl_->thumbnail_entries_dirty = true;
       impl_->retain_relevant_frames();
       impl_->prefetch_neighbors();
       impl_->refresh_thumbnail_items();
