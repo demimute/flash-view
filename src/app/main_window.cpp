@@ -795,6 +795,92 @@ struct MainWindow::Impl {
     draw_toolbar(hdc);
   }
 
+  [[nodiscard]] render::RenderOverlay make_render_overlay() {
+    render::RenderOverlay overlay;
+
+    if (thumbnail_layout.visible && navigator.has_value()) {
+      const RECT panel = thumbnail_panel_rect();
+      overlay.thumbnails_visible = true;
+      overlay.thumbnail_panel = panel;
+      if (const auto splitter = thumbnail_splitter_rect()) {
+        overlay.thumbnail_splitter = *splitter;
+      }
+
+      const int thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
+      const int cell_width = thumb + 28;
+      const int cell_height = thumb + 42;
+      const int padding = 14;
+      const int usable_width = (panel.right - panel.left) - padding * 2;
+      const int columns = (std::max)(1, usable_width / cell_width);
+      const auto& items = navigator->items();
+      overlay.thumbnails.reserve((std::min)(items.size(), std::size_t{128}));
+
+      for (std::size_t index = 0; index < items.size(); ++index) {
+        const int row = static_cast<int>(index) / columns;
+        const int col = static_cast<int>(index) % columns;
+        RECT cell{
+            panel.left + padding + col * cell_width,
+            panel.top + padding + row * cell_height,
+            panel.left + padding + col * cell_width + cell_width - 10,
+            panel.top + padding + row * cell_height + cell_height - 8,
+        };
+        if (cell.top >= panel.bottom) {
+          break;
+        }
+        if (cell.bottom <= panel.top) {
+          continue;
+        }
+
+        RECT image_rect{cell.left + 8, cell.top + 6, cell.left + 8 + thumb,
+                        cell.top + 6 + thumb};
+        const auto frame = thumbnail_frame_for(items[index]);
+        if (frame && frame->width > 0 && frame->height > 0) {
+          const double source_aspect =
+              static_cast<double>(frame->width) /
+              static_cast<double>(frame->height);
+          int draw_width = thumb;
+          int draw_height = thumb;
+          if (source_aspect >= 1.0) {
+            draw_height = (std::max)(
+                1, static_cast<int>(
+                       static_cast<double>(thumb) / source_aspect));
+          } else {
+            draw_width = (std::max)(
+                1, static_cast<int>(
+                       static_cast<double>(thumb) * source_aspect));
+          }
+          const int left = image_rect.left + (thumb - draw_width) / 2;
+          const int top = image_rect.top + (thumb - draw_height) / 2;
+          image_rect = RECT{left, top, left + draw_width, top + draw_height};
+        }
+
+        overlay.thumbnails.push_back(render::ThumbnailOverlayItem{
+            .cell = cell,
+            .image_bounds = image_rect,
+            .frame = frame.get(),
+            .label = items[index].filename().wstring(),
+            .selected = index == navigator->current_index(),
+        });
+      }
+    }
+
+    if (toolbar_visible) {
+      layout_toolbar_buttons();
+      overlay.toolbar_visible = true;
+      overlay.toolbar_bounds = toolbar_rect();
+      overlay.toolbar_items.reserve(toolbar_button_rects.size());
+      for (std::size_t index = 0; index < toolbar_button_rects.size();
+           ++index) {
+        overlay.toolbar_items.push_back(render::ToolbarOverlayItem{
+            .bounds = toolbar_button_rects[index],
+            .icon = index,
+        });
+      }
+    }
+
+    return overlay;
+  }
+
   [[nodiscard]] std::optional<std::size_t> toolbar_hit(Point point) {
     if (!toolbar_visible) {
       return std::nullopt;
@@ -1702,14 +1788,14 @@ LRESULT MainWindow::handle_message(
       std::optional<core::Error> draw_error;
       bool draw_succeeded = false;
       if (impl_->renderer_ready) {
-        auto draw_result = impl_->renderer.draw(impl_->transform);
+        auto overlay = impl_->make_render_overlay();
+        auto draw_result = impl_->renderer.draw(impl_->transform, &overlay);
         if (!draw_result.has_value()) {
           draw_error = std::move(draw_result.error());
         } else {
           draw_succeeded = draw_result.value();
         }
       }
-      impl_->draw_overlays(paint.hdc);
 
       EndPaint(impl_->window, &paint);
       if (draw_error.has_value()) {

@@ -153,6 +153,7 @@ struct D3dRenderer::Impl {
   ComPtr<ID2D1Bitmap1> image;
   ComPtr<IDWriteFactory> dwrite_factory;
   ComPtr<IDWriteTextFormat> status_text_format;
+  ComPtr<IDWriteTextFormat> label_text_format;
   ComPtr<ID2D1SolidColorBrush> status_text_brush;
   std::wstring status_text;
 
@@ -166,6 +167,7 @@ struct D3dRenderer::Impl {
     swap_chain.Reset();
     status_text_brush.Reset();
     status_text_format.Reset();
+    label_text_format.Reset();
     dwrite_factory.Reset();
     d2d_context.Reset();
     d2d_device.Reset();
@@ -197,6 +199,186 @@ struct D3dRenderer::Impl {
       d2d_context->SetTarget(target.Get());
     }
     return result;
+  }
+
+  void fill_rect(const RECT& rect, D2D1_COLOR_F color) {
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(d2d_context->CreateSolidColorBrush(
+            color, brush.ReleaseAndGetAddressOf()))) {
+      return;
+    }
+    d2d_context->FillRectangle(
+        D2D1::RectF(static_cast<float>(rect.left),
+                    static_cast<float>(rect.top),
+                    static_cast<float>(rect.right),
+                    static_cast<float>(rect.bottom)),
+        brush.Get());
+  }
+
+  void draw_toolbar_icon(const RECT& rect, std::size_t icon) {
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(d2d_context->CreateSolidColorBrush(
+            D2D1::ColorF(0xEEF4FC, 1.0F),
+            brush.ReleaseAndGetAddressOf()))) {
+      return;
+    }
+    const float left = static_cast<float>(rect.left);
+    const float top = static_cast<float>(rect.top);
+    const float right = static_cast<float>(rect.right);
+    const float bottom = static_cast<float>(rect.bottom);
+    const float cx = (left + right) / 2.0F;
+    const float cy = (top + bottom) / 2.0F;
+
+    switch (icon) {
+      case 0:
+        d2d_context->DrawRectangle(D2D1::RectF(left + 8, top + 16, right - 8,
+                                               bottom - 9),
+                                   brush.Get(), 2.0F);
+        d2d_context->DrawLine(D2D1::Point2F(left + 10, top + 16),
+                              D2D1::Point2F(left + 16, top + 11),
+                              brush.Get(), 2.0F);
+        d2d_context->DrawLine(D2D1::Point2F(left + 16, top + 11),
+                              D2D1::Point2F(left + 25, top + 11),
+                              brush.Get(), 2.0F);
+        break;
+      case 1:
+        d2d_context->DrawLine(D2D1::Point2F(cx + 8, cy - 10),
+                              D2D1::Point2F(cx - 8, cy), brush.Get(), 3.0F);
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
+                              D2D1::Point2F(cx + 8, cy + 10),
+                              brush.Get(), 3.0F);
+        break;
+      case 2:
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy - 10),
+                              D2D1::Point2F(cx + 8, cy), brush.Get(), 3.0F);
+        d2d_context->DrawLine(D2D1::Point2F(cx + 8, cy),
+                              D2D1::Point2F(cx - 8, cy + 10),
+                              brush.Get(), 3.0F);
+        break;
+      case 3:
+        d2d_context->DrawRectangle(D2D1::RectF(left + 10, top + 10,
+                                               right - 10, bottom - 10),
+                                   brush.Get(), 2.0F);
+        break;
+      case 4:
+        if (label_text_format) {
+          d2d_context->DrawText(L"1", 1, label_text_format.Get(),
+                                D2D1::RectF(left, top + 2, right, bottom),
+                                brush.Get());
+        }
+        break;
+      case 5:
+        d2d_context->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), 10, 10),
+                                 brush.Get(), 2.0F);
+        d2d_context->DrawLine(D2D1::Point2F(right - 13, cy - 7),
+                              D2D1::Point2F(right - 8, cy),
+                              brush.Get(), 2.0F);
+        break;
+      case 6:
+        for (int row = 0; row < 3; ++row) {
+          for (int col = 0; col < 3; ++col) {
+            d2d_context->DrawRectangle(
+                D2D1::RectF(left + 10 + col * 7, top + 10 + row * 7,
+                            left + 15 + col * 7, top + 15 + row * 7),
+                brush.Get(), 1.5F);
+          }
+        }
+        break;
+      case 7:
+        d2d_context->DrawRectangle(D2D1::RectF(left + 9, top + 9, right - 9,
+                                               bottom - 9),
+                                   brush.Get(), 2.0F);
+        d2d_context->DrawLine(D2D1::Point2F(left + 9, bottom - 17),
+                              D2D1::Point2F(right - 9, bottom - 17),
+                              brush.Get(), 2.0F);
+        break;
+      case 8:
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
+                              D2D1::Point2F(cx + 8, cy), brush.Get(), 2.5F);
+        d2d_context->DrawLine(D2D1::Point2F(cx, cy - 8),
+                              D2D1::Point2F(cx, cy + 8), brush.Get(), 2.5F);
+        break;
+      case 9:
+        d2d_context->DrawLine(D2D1::Point2F(cx - 8, cy),
+                              D2D1::Point2F(cx + 8, cy), brush.Get(), 2.5F);
+        break;
+      default:
+        break;
+    }
+  }
+
+  void draw_overlay(const RenderOverlay& overlay) {
+    if (overlay.thumbnails_visible) {
+      fill_rect(overlay.thumbnail_panel, D2D1::ColorF(0x14171C, 0.94F));
+      fill_rect(overlay.thumbnail_splitter, D2D1::ColorF(0x505866, 1.0F));
+      for (const auto& item : overlay.thumbnails) {
+        fill_rect(item.cell,
+                  item.selected ? D2D1::ColorF(0x345680, 0.92F)
+                                : D2D1::ColorF(0x22262C, 0.86F));
+        if (item.frame != nullptr && frame_is_valid(*item.frame)) {
+          const D2D1_BITMAP_PROPERTIES1 properties =
+              D2D1::BitmapProperties1(
+                  D2D1_BITMAP_OPTIONS_NONE,
+                  D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                    D2D1_ALPHA_MODE_PREMULTIPLIED),
+                  96.0F, 96.0F);
+          ComPtr<ID2D1Bitmap1> bitmap;
+          if (SUCCEEDED(d2d_context->CreateBitmap(
+                  D2D1::SizeU(item.frame->width, item.frame->height),
+                  item.frame->pixels.data(), item.frame->stride, &properties,
+                  bitmap.ReleaseAndGetAddressOf()))) {
+            d2d_context->DrawBitmap(
+                bitmap.Get(),
+                D2D1::RectF(static_cast<float>(item.image_bounds.left),
+                            static_cast<float>(item.image_bounds.top),
+                            static_cast<float>(item.image_bounds.right),
+                            static_cast<float>(item.image_bounds.bottom)),
+                1.0F, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr);
+          }
+        }
+        ComPtr<ID2D1SolidColorBrush> border;
+        if (SUCCEEDED(d2d_context->CreateSolidColorBrush(
+                item.selected ? D2D1::ColorF(0x7EAADF, 1.0F)
+                              : D2D1::ColorF(0x4E545E, 1.0F),
+                border.ReleaseAndGetAddressOf()))) {
+          d2d_context->DrawRectangle(
+              D2D1::RectF(static_cast<float>(item.image_bounds.left),
+                          static_cast<float>(item.image_bounds.top),
+                          static_cast<float>(item.image_bounds.right),
+                          static_cast<float>(item.image_bounds.bottom)),
+              border.Get(), item.selected ? 2.0F : 1.0F);
+          if (label_text_format) {
+            d2d_context->DrawText(
+                item.label.c_str(), static_cast<UINT32>(item.label.size()),
+                label_text_format.Get(),
+                D2D1::RectF(static_cast<float>(item.cell.left + 4),
+                            static_cast<float>(item.image_bounds.bottom + 6),
+                            static_cast<float>(item.cell.right - 4),
+                            static_cast<float>(item.cell.bottom - 2)),
+                border.Get());
+          }
+        }
+      }
+    }
+
+    if (overlay.toolbar_visible) {
+      ComPtr<ID2D1SolidColorBrush> background;
+      if (SUCCEEDED(d2d_context->CreateSolidColorBrush(
+              D2D1::ColorF(0x121519, 0.76F),
+              background.ReleaseAndGetAddressOf()))) {
+        d2d_context->FillRoundedRectangle(
+            D2D1::RoundedRect(
+                D2D1::RectF(static_cast<float>(overlay.toolbar_bounds.left),
+                            static_cast<float>(overlay.toolbar_bounds.top),
+                            static_cast<float>(overlay.toolbar_bounds.right),
+                            static_cast<float>(overlay.toolbar_bounds.bottom)),
+                14.0F, 14.0F),
+            background.Get());
+      }
+      for (const auto& item : overlay.toolbar_items) {
+        draw_toolbar_icon(item.bounds, item.icon);
+      }
+    }
   }
 };
 
@@ -321,6 +503,18 @@ core::Result<bool> D3dRenderer::initialize(HWND window) {
       DWRITE_TEXT_ALIGNMENT_CENTER));
   static_cast<void>(impl_->status_text_format->SetParagraphAlignment(
       DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+
+  result = impl_->dwrite_factory->CreateTextFormat(
+      L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 12.0F, L"",
+      impl_->label_text_format.ReleaseAndGetAddressOf());
+  if (FAILED(result)) {
+    return platform_failure(L"DirectWrite overlay text format creation failed.");
+  }
+  static_cast<void>(impl_->label_text_format->SetTextAlignment(
+      DWRITE_TEXT_ALIGNMENT_CENTER));
+  static_cast<void>(impl_->label_text_format->SetParagraphAlignment(
+      DWRITE_PARAGRAPH_ALIGNMENT_NEAR));
 
   result = impl_->d2d_context->CreateSolidColorBrush(
       D2D1::ColorF(0xD8DEE9, 1.0F),
@@ -470,7 +664,8 @@ void D3dRenderer::set_status_text(std::wstring text) {
 }
 
 core::Result<bool> D3dRenderer::draw(
-    const core::ViewTransform& transform) {
+    const core::ViewTransform& transform,
+    const RenderOverlay* overlay) {
   if (impl_ && impl_->lost) {
     return render_target_lost(L"Renderer render target is lost.");
   }
@@ -507,6 +702,10 @@ core::Result<bool> D3dRenderer::draw(
         static_cast<UINT32>(impl_->status_text.size()),
         impl_->status_text_format.Get(), layout,
         impl_->status_text_brush.Get());
+  }
+
+  if (overlay != nullptr) {
+    impl_->draw_overlay(*overlay);
   }
 
   const HRESULT draw_result = impl_->d2d_context->EndDraw();
