@@ -327,6 +327,12 @@ struct D3dRenderer::Impl {
   void draw_overlay(const RenderOverlay& overlay) {
     if (overlay.thumbnails_visible) {
       fill_rect(overlay.thumbnail_panel, D2D1::ColorF(0x14171C, 0.94F));
+      d2d_context->PushAxisAlignedClip(
+          D2D1::RectF(static_cast<float>(overlay.thumbnail_panel.left),
+                      static_cast<float>(overlay.thumbnail_panel.top),
+                      static_cast<float>(overlay.thumbnail_panel.right),
+                      static_cast<float>(overlay.thumbnail_panel.bottom)),
+          D2D1_ANTIALIAS_MODE_ALIASED);
       fill_rect(overlay.thumbnail_splitter, D2D1::ColorF(0x505866, 1.0F));
       if (overlay.thumbnail_scrollbar_visible) {
         fill_rect(overlay.thumbnail_scrollbar_track,
@@ -382,6 +388,7 @@ struct D3dRenderer::Impl {
           }
         }
       }
+      d2d_context->PopAxisAlignedClip();
     }
 
     if (overlay.toolbar_visible) {
