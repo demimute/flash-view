@@ -441,11 +441,12 @@ struct MainWindow::Impl {
     metrics.thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
     metrics.cell_width = metrics.thumb + 28;
     metrics.cell_height = metrics.thumb + 42;
-    metrics.viewport_height = (std::max)(0, panel.bottom - panel.top);
+    metrics.viewport_height =
+        (std::max)(0, static_cast<int>(panel.bottom - panel.top));
     const int scrollbar_allowance = 14;
+    const int panel_width = static_cast<int>(panel.right - panel.left);
     const int usable_width = (std::max)(
-        1, (panel.right - panel.left) - metrics.padding * 2 -
-               scrollbar_allowance);
+        1, panel_width - metrics.padding * 2 - scrollbar_allowance);
     metrics.columns = (std::max)(1, usable_width / metrics.cell_width);
     const int item_count = navigator.has_value()
                                ? static_cast<int>(navigator->items().size())
@@ -933,9 +934,9 @@ struct MainWindow::Impl {
             panel.right - track_margin,
             panel.bottom - track_margin,
         };
-        const int track_height =
-            (std::max)(1, overlay.thumbnail_scrollbar_track.bottom -
-                              overlay.thumbnail_scrollbar_track.top);
+        const int track_height = (std::max)(
+            1, static_cast<int>(overlay.thumbnail_scrollbar_track.bottom -
+                                overlay.thumbnail_scrollbar_track.top));
         const int thumb_height = (std::max)(
             24, track_height * metrics.viewport_height /
                     (std::max)(metrics.viewport_height,
