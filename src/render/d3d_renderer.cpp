@@ -328,6 +328,12 @@ struct D3dRenderer::Impl {
     if (overlay.thumbnails_visible) {
       fill_rect(overlay.thumbnail_panel, D2D1::ColorF(0x14171C, 0.94F));
       fill_rect(overlay.thumbnail_splitter, D2D1::ColorF(0x505866, 1.0F));
+      if (overlay.thumbnail_scrollbar_visible) {
+        fill_rect(overlay.thumbnail_scrollbar_track,
+                  D2D1::ColorF(0x272C34, 0.96F));
+        fill_rect(overlay.thumbnail_scrollbar_thumb,
+                  D2D1::ColorF(0x667181, 1.0F));
+      }
       for (const auto& item : overlay.thumbnails) {
         fill_rect(item.cell,
                   item.selected ? D2D1::ColorF(0x345680, 0.92F)
@@ -698,17 +704,43 @@ core::Result<bool> D3dRenderer::draw(
   if (impl_->image) {
     const D2D1_SIZE_U image_size = impl_->image->GetPixelSize();
     const D2D1_SIZE_U viewport_size = impl_->target->GetPixelSize();
-    const Affine2D transform_matrix = make_image_transform(
-        {image_size.width, image_size.height},
-        {viewport_size.width, viewport_size.height}, transform.scale(),
-        transform.rotation(), {transform.offset_x(), transform.offset_y()});
-    impl_->d2d_context->SetTransform(D2D1::Matrix3x2F(
-        transform_matrix.m11, transform_matrix.m12, transform_matrix.m21,
-        transform_matrix.m22, transform_matrix.dx, transform_matrix.dy));
-    impl_->d2d_context->DrawBitmap(
-        impl_->image.Get(), nullptr, 1.0F,
-        D2D1_INTERPOLATION_MODE_LINEAR, nullptr);
-    impl_->d2d_context->SetTransform(D2D1::Matrix3x2F::Identity());
+    RECT image_viewport{
+        0,
+        0,
+        static_cast<LONG>(viewport_size.width),
+        static_cast<LONG>(viewport_size.height),
+    };
+    if (overlay != nullptr && overlay->image_viewport_visible) {
+      image_viewport = overlay->image_viewport;
+    }
+    const auto viewport_width =
+        static_cast<std::uint32_t>((std::max)(
+            0L, image_viewport.right - image_viewport.left));
+    const auto viewport_height =
+        static_cast<std::uint32_t>((std::max)(
+            0L, image_viewport.bottom - image_viewport.top));
+    if (viewport_width > 0 && viewport_height > 0) {
+      const Affine2D transform_matrix = make_image_transform(
+          {image_size.width, image_size.height},
+          {viewport_width, viewport_height}, transform.scale(),
+          transform.rotation(), {transform.offset_x(), transform.offset_y()});
+      impl_->d2d_context->PushAxisAlignedClip(
+          D2D1::RectF(static_cast<float>(image_viewport.left),
+                      static_cast<float>(image_viewport.top),
+                      static_cast<float>(image_viewport.right),
+                      static_cast<float>(image_viewport.bottom)),
+          D2D1_ANTIALIAS_MODE_ALIASED);
+      impl_->d2d_context->SetTransform(D2D1::Matrix3x2F(
+          transform_matrix.m11, transform_matrix.m12, transform_matrix.m21,
+          transform_matrix.m22,
+          transform_matrix.dx + static_cast<float>(image_viewport.left),
+          transform_matrix.dy + static_cast<float>(image_viewport.top)));
+      impl_->d2d_context->DrawBitmap(
+          impl_->image.Get(), nullptr, 1.0F,
+          D2D1_INTERPOLATION_MODE_LINEAR, nullptr);
+      impl_->d2d_context->SetTransform(D2D1::Matrix3x2F::Identity());
+      impl_->d2d_context->PopAxisAlignedClip();
+    }
   } else if (!impl_->image && !impl_->status_text.empty()) {
     const D2D1_SIZE_U viewport_size = impl_->target->GetPixelSize();
     const D2D1_RECT_F layout = D2D1::RectF(

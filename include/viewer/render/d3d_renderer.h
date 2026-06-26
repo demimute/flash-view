@@ -27,12 +27,17 @@ struct ThumbnailOverlayItem {
 };
 
 struct RenderOverlay {
+  bool image_viewport_visible = false;
+  RECT image_viewport{};
   bool toolbar_visible = false;
   RECT toolbar_bounds{};
   std::vector<ToolbarOverlayItem> toolbar_items;
   bool thumbnails_visible = false;
   RECT thumbnail_panel{};
   RECT thumbnail_splitter{};
+  bool thumbnail_scrollbar_visible = false;
+  RECT thumbnail_scrollbar_track{};
+  RECT thumbnail_scrollbar_thumb{};
   std::vector<ThumbnailOverlayItem> thumbnails;
 };
 

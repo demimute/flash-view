@@ -204,6 +204,7 @@ struct MainWindow::Impl {
   bool toolbar_visible = false;
   std::array<RECT, toolbar_buttons.size()> toolbar_button_rects{};
   bool resizing_thumbnail_panel = false;
+  int thumbnail_scroll_offset = 0;
   std::vector<std::filesystem::path> temporary_archive_dirs;
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
@@ -412,11 +413,101 @@ struct MainWindow::Impl {
         break;
     }
     thumbnail_layout.resize_panel(requested);
+    clamp_thumbnail_scroll();
+    fit_displayed_frame();
     update_child_layout();
   }
 
   void refresh_thumbnail_items() {
+    clamp_thumbnail_scroll();
     InvalidateRect(window, nullptr, FALSE);
+  }
+
+  struct ThumbnailGridMetrics {
+    int thumb = 0;
+    int cell_width = 0;
+    int cell_height = 0;
+    int padding = 14;
+    int columns = 1;
+    int rows = 0;
+    int content_height = 0;
+    int viewport_height = 0;
+    int max_scroll = 0;
+  };
+
+  [[nodiscard]] ThumbnailGridMetrics thumbnail_grid_metrics(
+      const RECT& panel) const {
+    ThumbnailGridMetrics metrics;
+    metrics.thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
+    metrics.cell_width = metrics.thumb + 28;
+    metrics.cell_height = metrics.thumb + 42;
+    metrics.viewport_height = (std::max)(0, panel.bottom - panel.top);
+    const int scrollbar_allowance = 14;
+    const int usable_width = (std::max)(
+        1, (panel.right - panel.left) - metrics.padding * 2 -
+               scrollbar_allowance);
+    metrics.columns = (std::max)(1, usable_width / metrics.cell_width);
+    const int item_count = navigator.has_value()
+                               ? static_cast<int>(navigator->items().size())
+                               : 0;
+    metrics.rows = item_count == 0
+                       ? 0
+                       : (item_count + metrics.columns - 1) / metrics.columns;
+    metrics.content_height =
+        metrics.padding * 2 + metrics.rows * metrics.cell_height;
+    metrics.max_scroll =
+        (std::max)(0, metrics.content_height - metrics.viewport_height);
+    return metrics;
+  }
+
+  void clamp_thumbnail_scroll() {
+    if (!thumbnail_layout.visible || !navigator.has_value()) {
+      thumbnail_scroll_offset = 0;
+      return;
+    }
+    const ThumbnailGridMetrics metrics =
+        thumbnail_grid_metrics(thumbnail_panel_rect());
+    thumbnail_scroll_offset =
+        std::clamp(thumbnail_scroll_offset, 0, metrics.max_scroll);
+  }
+
+  [[nodiscard]] bool is_point_in_thumbnail_panel(Point point) const {
+    if (!thumbnail_layout.visible) {
+      return false;
+    }
+    const RECT panel = thumbnail_panel_rect();
+    POINT native{point.x, point.y};
+    return PtInRect(&panel, native) != FALSE;
+  }
+
+  bool scroll_thumbnail_panel(int steps) {
+    if (steps == 0 || !thumbnail_layout.visible || !navigator.has_value()) {
+      return false;
+    }
+    const ThumbnailGridMetrics metrics =
+        thumbnail_grid_metrics(thumbnail_panel_rect());
+    if (metrics.max_scroll == 0) {
+      return false;
+    }
+    thumbnail_scroll_offset =
+        std::clamp(thumbnail_scroll_offset -
+                       steps * (std::max)(32, metrics.cell_height / 2),
+                   0, metrics.max_scroll);
+    InvalidateRect(window, nullptr, FALSE);
+    return true;
+  }
+
+  [[nodiscard]] std::shared_ptr<core::ImageFrame> cached_thumbnail_frame_for(
+      const std::filesystem::path& path) const {
+    const std::wstring key = path.wstring();
+    if (const auto cached = thumbnail_cache.find(key);
+        cached != thumbnail_cache.end()) {
+      return cached->second;
+    }
+    if (const auto cached_frame = frame_cache.find(path)) {
+      return cached_frame;
+    }
+    return {};
   }
 
   [[nodiscard]] std::shared_ptr<core::ImageFrame> thumbnail_frame_for(
@@ -819,8 +910,11 @@ struct MainWindow::Impl {
 
   [[nodiscard]] render::RenderOverlay make_render_overlay() {
     render::RenderOverlay overlay;
+    overlay.image_viewport_visible = true;
+    overlay.image_viewport = image_area_rect();
 
     if (thumbnail_layout.visible && navigator.has_value()) {
+      clamp_thumbnail_scroll();
       const RECT panel = thumbnail_panel_rect();
       overlay.thumbnails_visible = true;
       overlay.thumbnail_panel = panel;
@@ -828,23 +922,53 @@ struct MainWindow::Impl {
         overlay.thumbnail_splitter = *splitter;
       }
 
-      const int thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
-      const int cell_width = thumb + 28;
-      const int cell_height = thumb + 42;
-      const int padding = 14;
-      const int usable_width = (panel.right - panel.left) - padding * 2;
-      const int columns = (std::max)(1, usable_width / cell_width);
+      const ThumbnailGridMetrics metrics = thumbnail_grid_metrics(panel);
+      if (metrics.max_scroll > 0) {
+        overlay.thumbnail_scrollbar_visible = true;
+        const int track_width = 8;
+        const int track_margin = 4;
+        overlay.thumbnail_scrollbar_track = RECT{
+            panel.right - track_width - track_margin,
+            panel.top + track_margin,
+            panel.right - track_margin,
+            panel.bottom - track_margin,
+        };
+        const int track_height =
+            (std::max)(1, overlay.thumbnail_scrollbar_track.bottom -
+                              overlay.thumbnail_scrollbar_track.top);
+        const int thumb_height = (std::max)(
+            24, track_height * metrics.viewport_height /
+                    (std::max)(metrics.viewport_height,
+                               metrics.content_height));
+        const int thumb_travel = (std::max)(0, track_height - thumb_height);
+        const int thumb_top =
+            overlay.thumbnail_scrollbar_track.top +
+            (metrics.max_scroll == 0
+                 ? 0
+                 : thumbnail_scroll_offset * thumb_travel /
+                       metrics.max_scroll);
+        overlay.thumbnail_scrollbar_thumb = RECT{
+            overlay.thumbnail_scrollbar_track.left,
+            thumb_top,
+            overlay.thumbnail_scrollbar_track.right,
+            thumb_top + thumb_height,
+        };
+      }
+
       const auto& items = navigator->items();
       overlay.thumbnails.reserve((std::min)(items.size(), std::size_t{128}));
 
       for (std::size_t index = 0; index < items.size(); ++index) {
-        const int row = static_cast<int>(index) / columns;
-        const int col = static_cast<int>(index) % columns;
+        const int row = static_cast<int>(index) / metrics.columns;
+        const int col = static_cast<int>(index) % metrics.columns;
         RECT cell{
-            panel.left + padding + col * cell_width,
-            panel.top + padding + row * cell_height,
-            panel.left + padding + col * cell_width + cell_width - 10,
-            panel.top + padding + row * cell_height + cell_height - 8,
+            panel.left + metrics.padding + col * metrics.cell_width,
+            panel.top + metrics.padding + row * metrics.cell_height -
+                thumbnail_scroll_offset,
+            panel.left + metrics.padding + col * metrics.cell_width +
+                metrics.cell_width - 10,
+            panel.top + metrics.padding + row * metrics.cell_height +
+                metrics.cell_height - 8 - thumbnail_scroll_offset,
         };
         if (cell.top >= panel.bottom) {
           break;
@@ -853,26 +977,31 @@ struct MainWindow::Impl {
           continue;
         }
 
-        RECT image_rect{cell.left + 8, cell.top + 6, cell.left + 8 + thumb,
-                        cell.top + 6 + thumb};
-        const auto frame = thumbnail_frame_for(items[index]);
+        RECT image_rect{cell.left + 8, cell.top + 6,
+                        cell.left + 8 + metrics.thumb,
+                        cell.top + 6 + metrics.thumb};
+        const auto frame = resizing_thumbnail_panel
+                               ? cached_thumbnail_frame_for(items[index])
+                               : thumbnail_frame_for(items[index]);
         if (frame && frame->width > 0 && frame->height > 0) {
           const double source_aspect =
               static_cast<double>(frame->width) /
               static_cast<double>(frame->height);
-          int draw_width = thumb;
-          int draw_height = thumb;
+          int draw_width = metrics.thumb;
+          int draw_height = metrics.thumb;
           if (source_aspect >= 1.0) {
             draw_height = (std::max)(
                 1, static_cast<int>(
-                       static_cast<double>(thumb) / source_aspect));
+                       static_cast<double>(metrics.thumb) / source_aspect));
           } else {
             draw_width = (std::max)(
                 1, static_cast<int>(
-                       static_cast<double>(thumb) * source_aspect));
+                       static_cast<double>(metrics.thumb) * source_aspect));
           }
-          const int left = image_rect.left + (thumb - draw_width) / 2;
-          const int top = image_rect.top + (thumb - draw_height) / 2;
+          const int left =
+              image_rect.left + (metrics.thumb - draw_width) / 2;
+          const int top =
+              image_rect.top + (metrics.thumb - draw_height) / 2;
           image_rect = RECT{left, top, left + draw_width, top + draw_height};
         }
 
@@ -926,23 +1055,20 @@ struct MainWindow::Impl {
     if (PtInRect(&panel, native) == FALSE) {
       return std::nullopt;
     }
-    const int thumb = static_cast<int>(thumbnail_layout.thumbnail_size);
-    const int cell_width = thumb + 28;
-    const int cell_height = thumb + 42;
-    const int padding = 14;
-    const int usable_width = (panel.right - panel.left) - padding * 2;
-    const int columns = (std::max)(1, usable_width / cell_width);
-    const int local_x = point.x - panel.left - padding;
-    const int local_y = point.y - panel.top - padding;
+    const ThumbnailGridMetrics metrics = thumbnail_grid_metrics(panel);
+    const int local_x = point.x - panel.left - metrics.padding;
+    const int local_y =
+        point.y - panel.top - metrics.padding + thumbnail_scroll_offset;
     if (local_x < 0 || local_y < 0) {
       return std::nullopt;
     }
-    const int col = local_x / cell_width;
-    const int row = local_y / cell_height;
-    if (col < 0 || col >= columns) {
+    const int col = local_x / metrics.cell_width;
+    const int row = local_y / metrics.cell_height;
+    if (col < 0 || col >= metrics.columns) {
       return std::nullopt;
     }
-    const std::size_t index = static_cast<std::size_t>(row * columns + col);
+    const std::size_t index =
+        static_cast<std::size_t>(row * metrics.columns + col);
     if (index >= navigator->items().size()) {
       return std::nullopt;
     }
@@ -1442,12 +1568,16 @@ struct MainWindow::Impl {
 
   void toggle_thumbnails() {
     thumbnail_layout.toggle_visible();
+    clamp_thumbnail_scroll();
+    fit_displayed_frame();
     update_child_layout();
     refresh_thumbnail_items();
   }
 
   void cycle_thumbnail_dock() {
     thumbnail_layout.cycle_dock();
+    clamp_thumbnail_scroll();
+    fit_displayed_frame();
     update_child_layout();
   }
 
@@ -1458,11 +1588,13 @@ struct MainWindow::Impl {
 
   void grow_thumbnails() {
     thumbnail_layout.grow_thumbnails();
+    clamp_thumbnail_scroll();
     update_child_layout();
   }
 
   void shrink_thumbnails() {
     thumbnail_layout.shrink_thumbnails();
+    clamp_thumbnail_scroll();
     update_child_layout();
   }
 
@@ -1799,6 +1931,8 @@ LRESULT MainWindow::handle_message(
 
       auto resize_result = impl_->renderer.resize(width, height);
       impl_->handle_resize_result(width, height, resize_result);
+      impl_->clamp_thumbnail_scroll();
+      impl_->fit_displayed_frame();
       impl_->update_child_layout();
       return 0;
     }
@@ -1945,6 +2079,17 @@ LRESULT MainWindow::handle_message(
     }
 
     case WM_MOUSEWHEEL: {
+      POINT cursor{
+          GET_X_LPARAM(lparam),
+          GET_Y_LPARAM(lparam),
+      };
+      if (ScreenToClient(impl_->window, &cursor) != FALSE &&
+          impl_->is_point_in_thumbnail_panel({cursor.x, cursor.y})) {
+        const int steps = impl_->wheel_delta.consume(
+            GET_WHEEL_DELTA_WPARAM(wparam));
+        static_cast<void>(impl_->scroll_thumbnail_panel(steps));
+        return 0;
+      }
       const int steps = impl_->wheel_delta.consume(
           GET_WHEEL_DELTA_WPARAM(wparam));
       if (steps != 0) {

@@ -41,7 +41,7 @@ TEST(ThumbnailLayoutTest, ClampsThumbnailSize) {
   EXPECT_EQ(layout.thumbnail_size, 320U);
 }
 
-TEST(ThumbnailLayoutTest, ClampsPanelExtent) {
+TEST(ThumbnailLayoutTest, KeepsMinimumPanelExtentWithoutUpperLimit) {
   ThumbnailLayoutState layout;
 
   layout.resize_panel(20);
@@ -51,7 +51,7 @@ TEST(ThumbnailLayoutTest, ClampsPanelExtent) {
   EXPECT_EQ(layout.panel_extent, 320U);
 
   layout.resize_panel(900);
-  EXPECT_EQ(layout.panel_extent, 520U);
+  EXPECT_EQ(layout.panel_extent, 900U);
 }
 
 }  // namespace

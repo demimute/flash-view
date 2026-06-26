@@ -32,7 +32,7 @@ struct ThumbnailLayoutState {
   }
 
   void resize_panel(std::uint32_t extent) noexcept {
-    panel_extent = std::clamp<std::uint32_t>(extent, 96, 520);
+    panel_extent = std::max<std::uint32_t>(extent, 96);
   }
 
   void cycle_dock() noexcept {
