@@ -40,10 +40,10 @@ foreach ($extension in $extensions) {
 Remove-Item -Recurse -Force "HKCU:\Software\Classes\$progId" `
   -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force `
-  "HKCU:\Software\Classes\Applications\fast_viewer.exe" `
+  "HKCU:\Software\Classes\Applications\FlashView.exe" `
   -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force `
-  "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\fast_viewer.exe" `
+  "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\FlashView.exe" `
   -ErrorAction SilentlyContinue
 Remove-ItemProperty `
   -Path "HKCU:\Software\RegisteredApplications" `

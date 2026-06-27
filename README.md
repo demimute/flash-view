@@ -1,4 +1,4 @@
-# Fast Image Viewer
+# FlashView
 
 Windows 10 22H2/Windows 11 x64 native image viewer focused on low-latency
 opening, rendering, and previous/next navigation.
@@ -59,25 +59,26 @@ the Windows vcpkg manifest workflow.
 ## Run
 
 ```powershell
-.\build\windows-msvc-debug\Debug\fast_viewer.exe C:\Pictures\photo.jpg
+.\build\windows-msvc-debug\Debug\FlashView.exe C:\Pictures\photo.jpg
 ```
 
 Open any image in a directory to enable previous/next navigation across the
 supported images in that directory. Open a ZIP or CBZ archive to extract it to
 a temporary folder and jump to the first supported image inside it.
 
-You can also launch `fast_viewer.exe` without an argument. The empty window
+You can also launch `FlashView.exe` without an argument. The empty window
 shows a small prompt; press `O` to open an image, or drag an image file into the
 window.
 
 ## Register file associations
 
-The release artifact includes `register_file_associations.ps1`. Run it from the
-same directory as `fast_viewer.exe` to register supported image and archive
-extensions for the current Windows user:
+The release artifact includes `FlashViewAssociate.exe`,
+`FlashViewUnassociate.exe`, and backup PowerShell scripts. Run
+`FlashViewAssociate.exe` from the same directory as `FlashView.exe` to register
+supported image extensions for the current Windows user:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\register_file_associations.ps1
+.\FlashViewAssociate.exe
 ```
 
 After registration, supported image files can be opened with FlashView from

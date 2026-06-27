@@ -138,3 +138,24 @@ TEST(SourceRegressionTest, AssociationToolDetectsWindowsDefaultAppBlocking) {
   EXPECT_NE(source.find("Windows 10/11 default-app protection"),
             std::string::npos);
 }
+
+TEST(SourceRegressionTest, PublicExecutableNameIsFlashView) {
+  const std::filesystem::path tool_source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /
+      "file_association.cpp";
+  std::ifstream tool_stream(tool_source_path);
+  const std::string tool_source((std::istreambuf_iterator<char>(tool_stream)),
+                                std::istreambuf_iterator<char>());
+  ASSERT_FALSE(tool_source.empty());
+
+  EXPECT_NE(tool_source.find("FlashView.exe"), std::string::npos);
+  EXPECT_EQ(tool_source.find("fast_viewer.exe"), std::string::npos);
+
+  const std::filesystem::path cmake_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "CMakeLists.txt";
+  std::ifstream cmake_stream(cmake_path);
+  const std::string cmake_source((std::istreambuf_iterator<char>(cmake_stream)),
+                                 std::istreambuf_iterator<char>());
+  ASSERT_FALSE(cmake_source.empty());
+  EXPECT_NE(cmake_source.find("OUTPUT_NAME FlashView"), std::string::npos);
+}

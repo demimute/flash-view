@@ -3,8 +3,8 @@ param(
 )
 
 if ([string]::IsNullOrWhiteSpace($ExePath)) {
-  $sameDirectoryExe = Join-Path $PSScriptRoot "fast_viewer.exe"
-  $repoBuildExe = Join-Path $PSScriptRoot "..\build\windows-msvc-release\Release\fast_viewer.exe"
+  $sameDirectoryExe = Join-Path $PSScriptRoot "FlashView.exe"
+  $repoBuildExe = Join-Path $PSScriptRoot "..\build\windows-msvc-release\Release\FlashView.exe"
   if (Test-Path -LiteralPath $sameDirectoryExe) {
     $ExePath = $sameDirectoryExe
   } else {
@@ -14,9 +14,9 @@ if ([string]::IsNullOrWhiteSpace($ExePath)) {
 
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
 $progId = "FlashView.Image"
-$applicationKey = "HKCU:\Software\Classes\Applications\fast_viewer.exe"
+$applicationKey = "HKCU:\Software\Classes\Applications\FlashView.exe"
 $capabilitiesPath = "$applicationKey\Capabilities"
-$appPathsKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\fast_viewer.exe"
+$appPathsKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\App Paths\FlashView.exe"
 $extensions = @(
   ".jpg", ".jpeg", ".png", ".bmp",
   ".gif", ".tif", ".tiff", ".ico", ".webp",
@@ -59,7 +59,7 @@ New-Item -Force -Path "$capabilitiesPath\FileAssociations" | Out-Null
 New-Item -Force -Path "HKCU:\Software\RegisteredApplications" | Out-Null
 Set-ItemProperty -Path "HKCU:\Software\RegisteredApplications" `
   -Name "FlashView" `
-  -Value "Software\Classes\Applications\fast_viewer.exe\Capabilities"
+  -Value "Software\Classes\Applications\FlashView.exe\Capabilities"
 
 foreach ($extension in $extensions) {
   New-Item -Force -Path "HKCU:\Software\Classes\$extension" | Out-Null

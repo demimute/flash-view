@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(FastImageViewer VERSION 0.1.0 LANGUAGES CXX)
+project(FlashView VERSION 0.1.0 LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -56,26 +56,29 @@ if(WIN32)
     dxgi
   )
 
-  add_executable(fast_viewer WIN32
+  add_executable(FlashView WIN32
     src/app/app.cpp
     src/app/app.rc
     src/app/main_window.cpp
     src/app/resource.h
     src/app/winmain.cpp
   )
-  target_compile_features(fast_viewer PRIVATE cxx_std_20)
-  target_compile_definitions(fast_viewer PRIVATE
+  set_target_properties(FlashView PROPERTIES
+    OUTPUT_NAME FlashView
+  )
+  target_compile_features(FlashView PRIVATE cxx_std_20)
+  target_compile_definitions(FlashView PRIVATE
     UNICODE
     _UNICODE
     WINVER=0x0A00
     _WIN32_WINNT=0x0A00
   )
-  target_include_directories(fast_viewer PRIVATE
+  target_include_directories(FlashView PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
   )
-  viewer_enable_warnings(fast_viewer)
-  target_link_libraries(fast_viewer PRIVATE
+  viewer_enable_warnings(FlashView)
+  target_link_libraries(FlashView PRIVATE
     viewer_core
     viewer_wic
     viewer_render

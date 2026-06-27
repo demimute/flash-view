@@ -46,8 +46,8 @@
 namespace viewer::app {
 namespace {
 
-constexpr wchar_t window_class_name[] = L"FastImageViewer.MainWindow";
-constexpr wchar_t window_title[] = L"Fast Image Viewer";
+constexpr wchar_t window_class_name[] = L"FlashView.MainWindow";
+constexpr wchar_t window_title[] = L"FlashView";
 constexpr wchar_t empty_prompt[] =
     L"Drop image here or press O to open.";
 constexpr UINT image_ready_message = WM_APP + 1;

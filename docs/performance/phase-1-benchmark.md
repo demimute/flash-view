@@ -31,7 +31,7 @@ cmake --build --preset windows-msvc-release
 Run:
 
 ```powershell
-.\build\windows-msvc-release\Release\fast_viewer.exe C:\Pictures\phase1\2.jpg
+.\build\windows-msvc-release\Release\FlashView.exe C:\Pictures\phase1\2.jpg
 ```
 
 ## Runs

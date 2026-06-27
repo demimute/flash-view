@@ -13,7 +13,7 @@
 namespace {
 
 constexpr std::wstring_view app_name = L"FlashView";
-constexpr std::wstring_view viewer_exe_name = L"fast_viewer.exe";
+constexpr std::wstring_view viewer_exe_name = L"FlashView.exe";
 constexpr std::wstring_view prog_id = L"FlashView.Image";
 constexpr std::array<std::wstring_view, 13> image_extensions{
     L".jpg",  L".jpeg", L".png", L".bmp",  L".gif",
@@ -283,7 +283,7 @@ AssociationResult register_associations(
                         L"Fast portable image viewer");
   ok &= write_key_value(
       L"Software\\RegisteredApplications", std::wstring(app_name).c_str(),
-      L"Software\\Classes\\Applications\\fast_viewer.exe\\Capabilities");
+      L"Software\\Classes\\Applications\\FlashView.exe\\Capabilities");
   ok &= write_key_default(context_menu_key, L"Open with FlashView");
   ok &= write_key_value(context_menu_key, L"Icon", quote(exe) + L",-0");
   ok &= write_key_default(context_menu_key + L"\\command", command);
@@ -372,8 +372,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   const auto viewer_path = resolve_viewer_path();
   if (!viewer_path.has_value()) {
     show_message(
-        L"fast_viewer.exe was not found.\n\n"
-        L"Please keep this program in the same folder as fast_viewer.exe.",
+        L"FlashView.exe was not found.\n\n"
+        L"Please keep this program in the same folder as FlashView.exe.",
         MB_ICONERROR);
     return 1;
   }
