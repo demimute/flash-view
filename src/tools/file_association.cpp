@@ -5,8 +5,10 @@
 #include <array>
 #include <filesystem>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -85,6 +87,37 @@ bool create_key(HKEY root, const std::wstring& subkey, HKEY* key) {
                          nullptr, key, nullptr) == ERROR_SUCCESS;
 }
 
+std::optional<std::wstring> read_string_value(const std::wstring& subkey,
+                                              const wchar_t* name) {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey.c_str(), 0, KEY_QUERY_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return std::nullopt;
+  }
+
+  DWORD type = 0;
+  DWORD byte_count = 0;
+  LONG result =
+      RegQueryValueExW(key, name, nullptr, &type, nullptr, &byte_count);
+  if (result != ERROR_SUCCESS || type != REG_SZ || byte_count == 0) {
+    RegCloseKey(key);
+    return std::nullopt;
+  }
+
+  std::wstring value(byte_count / sizeof(wchar_t), L'\0');
+  result = RegQueryValueExW(
+      key, name, nullptr, &type, reinterpret_cast<BYTE*>(value.data()),
+      &byte_count);
+  RegCloseKey(key);
+  if (result != ERROR_SUCCESS) {
+    return std::nullopt;
+  }
+  while (!value.empty() && value.back() == L'\0') {
+    value.pop_back();
+  }
+  return value;
+}
+
 bool set_string_value(HKEY key, const wchar_t* name,
                       const std::wstring& value) {
   return RegSetValueExW(
@@ -151,6 +184,21 @@ void delete_user_choice(const std::wstring_view extension) {
       std::wstring(extension) + L"\\UserChoice");
 }
 
+std::optional<std::wstring> user_choice_prog_id(
+    const std::wstring_view extension) {
+  return read_string_value(
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
+          std::wstring(extension) + L"\\UserChoice",
+      L"ProgId");
+}
+
+bool extension_default_is_flashview(const std::wstring_view extension) {
+  const auto extension_default =
+      read_string_value(L"Software\\Classes\\" + std::wstring(extension),
+                        nullptr);
+  return extension_default.has_value() && *extension_default == prog_id;
+}
+
 void delete_user_choice_if_flashview(const std::wstring_view extension) {
   const std::wstring user_choice_key =
       L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
@@ -196,7 +244,13 @@ void clear_extension_default_if_flashview(const std::wstring& extension_key) {
   RegCloseKey(key);
 }
 
-bool register_associations(const std::filesystem::path& viewer_path) {
+struct AssociationResult {
+  bool registry_write_ok = true;
+  std::vector<std::wstring> blocked_extensions;
+};
+
+AssociationResult register_associations(
+    const std::filesystem::path& viewer_path) {
   const std::wstring exe = viewer_path.wstring();
   const std::wstring command = quote(exe) + L" \"%1\"";
   const std::wstring classes = L"Software\\Classes\\";
@@ -204,10 +258,13 @@ bool register_associations(const std::filesystem::path& viewer_path) {
   const std::wstring application_key =
       classes + L"Applications\\" + std::wstring(viewer_exe_name);
   const std::wstring capabilities_key = application_key + L"\\Capabilities";
+  const std::wstring context_menu_key =
+      classes + L"SystemFileAssociations\\image\\shell\\FlashView";
   const std::wstring app_paths_key =
       L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
       std::wstring(viewer_exe_name);
 
+  AssociationResult result;
   bool ok = true;
   ok &= write_key_default(app_paths_key, exe);
   ok &= write_key_default(prog_key, L"FlashView image");
@@ -227,39 +284,58 @@ bool register_associations(const std::filesystem::path& viewer_path) {
   ok &= write_key_value(
       L"Software\\RegisteredApplications", std::wstring(app_name).c_str(),
       L"Software\\Classes\\Applications\\fast_viewer.exe\\Capabilities");
+  ok &= write_key_default(context_menu_key, L"Open with FlashView");
+  ok &= write_key_value(context_menu_key, L"Icon", quote(exe) + L",-0");
+  ok &= write_key_default(context_menu_key + L"\\command", command);
 
   for (const auto extension : image_extensions) {
     const std::wstring extension_string(extension);
     const std::wstring extension_key = classes + extension_string;
     delete_user_choice(extension);
     ok &= write_key_default(extension_key, std::wstring(prog_id));
+    ok &= write_key_default(extension_key + L"\\OpenWithList\\" +
+                                std::wstring(viewer_exe_name),
+                            L"");
     ok &= write_empty_binary_value(extension_key + L"\\OpenWithProgids",
                                    prog_id);
     ok &= write_key_value(capabilities_key + L"\\FileAssociations",
                           extension_string.c_str(), std::wstring(prog_id));
     ok &= write_key_value(application_key + L"\\SupportedTypes",
                           extension_string.c_str(), L"");
+
+    const auto user_choice = user_choice_prog_id(extension);
+    if ((user_choice.has_value() && *user_choice != prog_id) ||
+        (!user_choice.has_value() &&
+         !extension_default_is_flashview(extension))) {
+      result.blocked_extensions.push_back(extension_string);
+    }
   }
 
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return ok;
+  result.registry_write_ok = ok;
+  return result;
 }
 
 void unregister_associations() {
   const std::wstring classes = L"Software\\Classes\\";
   const std::wstring application_key =
       classes + L"Applications\\" + std::wstring(viewer_exe_name);
+  const std::wstring context_menu_key =
+      classes + L"SystemFileAssociations\\image\\shell\\FlashView";
 
   for (const auto extension : image_extensions) {
     const std::wstring extension_string(extension);
     const std::wstring extension_key = classes + extension_string;
     clear_extension_default_if_flashview(extension_key);
     delete_user_choice_if_flashview(extension);
+    delete_tree(extension_key + L"\\OpenWithList\\" +
+                std::wstring(viewer_exe_name));
     delete_value(extension_key + L"\\OpenWithProgids", prog_id);
   }
 
   delete_tree(classes + std::wstring(prog_id));
   delete_tree(application_key);
+  delete_tree(context_menu_key);
   delete_tree(L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
               std::wstring(viewer_exe_name));
   delete_value(L"Software\\RegisteredApplications", app_name);
@@ -268,6 +344,21 @@ void unregister_associations() {
 
 void show_message(const std::wstring& text, UINT icon = MB_ICONINFORMATION) {
   MessageBoxW(nullptr, text.c_str(), L"FlashView", MB_OK | icon);
+}
+
+std::wstring blocked_extension_message(const AssociationResult& result) {
+  std::wstringstream message;
+  message << L"FlashView has been registered.\n\n";
+  message << L"Windows did not allow direct default takeover for:\n";
+  for (const auto& extension : result.blocked_extensions) {
+    message << L"  " << extension << L"\n";
+  }
+  message << L"\nThis is Windows 10/11 default-app protection. "
+             L"FlashView was still added to Open with and the image right-click "
+             L"menu.\n\n";
+  message << L"For double-click default opening, choose FlashView once in "
+             L"Windows Settings > Apps > Default apps.";
+  return message.str();
 }
 
 }  // namespace
@@ -287,7 +378,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     return 1;
   }
 
-  if (!register_associations(*viewer_path)) {
+  const AssociationResult association_result =
+      register_associations(*viewer_path);
+  if (!association_result.registry_write_ok) {
     show_message(
         L"FlashView could not finish registering file associations.\n\n"
         L"Please try again, or move FlashView to a writable folder.",
@@ -295,10 +388,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     return 1;
   }
 
+  if (!association_result.blocked_extensions.empty()) {
+    show_message(blocked_extension_message(association_result),
+                 MB_ICONWARNING);
+    return 2;
+  }
+
   MessageBoxW(nullptr,
-      L"FlashView is now associated with supported image files.\n\n"
-      L"No archive formats were associated.",
-      L"FlashView", MB_OK | MB_ICONINFORMATION);
+              L"FlashView is now associated with supported image files.\n\n"
+              L"No archive formats were associated.",
+              L"FlashView", MB_OK | MB_ICONINFORMATION);
   return 0;
 #endif
 }

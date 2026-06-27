@@ -121,3 +121,20 @@ TEST(SourceRegressionTest, AssociationToolDirectlyAssignsImageExtensions) {
   EXPECT_NE(source.find("write_key_default(extension_key, std::wstring(prog_id))"),
             std::string::npos);
 }
+
+TEST(SourceRegressionTest, AssociationToolDetectsWindowsDefaultAppBlocking) {
+  const std::filesystem::path source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /
+      "file_association.cpp";
+  std::ifstream stream(source_path);
+  const std::string source((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("user_choice_prog_id"), std::string::npos);
+  EXPECT_NE(source.find("blocked_extensions"), std::string::npos);
+  EXPECT_NE(source.find("SystemFileAssociations\\\\image\\\\shell\\\\FlashView"),
+            std::string::npos);
+  EXPECT_NE(source.find("Windows 10/11 default-app protection"),
+            std::string::npos);
+}
