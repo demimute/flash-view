@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "viewer/render/d3d_error_policy.h"
@@ -152,6 +153,8 @@ struct D3dRenderer::Impl {
   ComPtr<ID2D1DeviceContext> d2d_context;
   ComPtr<ID2D1Bitmap1> target;
   ComPtr<ID2D1Bitmap1> image;
+  std::unordered_map<const core::ImageFrame*, ComPtr<ID2D1Bitmap1>>
+      thumbnail_bitmaps;
   ComPtr<IDWriteFactory> dwrite_factory;
   ComPtr<IDWriteTextFormat> status_text_format;
   ComPtr<IDWriteTextFormat> label_text_format;
@@ -164,6 +167,7 @@ struct D3dRenderer::Impl {
       d2d_context->SetTarget(nullptr);
     }
     image.Reset();
+    thumbnail_bitmaps.clear();
     target.Reset();
     swap_chain.Reset();
     status_text_brush.Reset();
@@ -376,6 +380,35 @@ struct D3dRenderer::Impl {
     }
   }
 
+  ID2D1Bitmap1* thumbnail_bitmap_for(const core::ImageFrame& frame) {
+    if (!frame_is_valid(frame)) {
+      return nullptr;
+    }
+    if (const auto cached = thumbnail_bitmaps.find(&frame);
+        cached != thumbnail_bitmaps.end()) {
+      return cached->second.Get();
+    }
+
+    const D2D1_BITMAP_PROPERTIES1 properties =
+        D2D1::BitmapProperties1(
+            D2D1_BITMAP_OPTIONS_NONE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                              D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0F, 96.0F);
+    ComPtr<ID2D1Bitmap1> bitmap;
+    if (FAILED(d2d_context->CreateBitmap(
+            D2D1::SizeU(frame.width, frame.height), frame.pixels.data(),
+            frame.stride, &properties, bitmap.ReleaseAndGetAddressOf()))) {
+      return nullptr;
+    }
+
+    if (thumbnail_bitmaps.size() > 1024) {
+      thumbnail_bitmaps.erase(thumbnail_bitmaps.begin());
+    }
+    const auto inserted = thumbnail_bitmaps.emplace(&frame, std::move(bitmap));
+    return inserted.first->second.Get();
+  }
+
   void draw_overlay(const RenderOverlay& overlay) {
     if (overlay.thumbnails_visible) {
       fill_rect(overlay.thumbnail_panel, D2D1::ColorF(0x14171C, 0.94F));
@@ -397,19 +430,10 @@ struct D3dRenderer::Impl {
                   item.selected ? D2D1::ColorF(0x345680, 0.92F)
                                 : D2D1::ColorF(0x22262C, 0.86F));
         if (item.frame != nullptr && frame_is_valid(*item.frame)) {
-          const D2D1_BITMAP_PROPERTIES1 properties =
-              D2D1::BitmapProperties1(
-                  D2D1_BITMAP_OPTIONS_NONE,
-                  D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
-                                    D2D1_ALPHA_MODE_PREMULTIPLIED),
-                  96.0F, 96.0F);
-          ComPtr<ID2D1Bitmap1> bitmap;
-          if (SUCCEEDED(d2d_context->CreateBitmap(
-                  D2D1::SizeU(item.frame->width, item.frame->height),
-                  item.frame->pixels.data(), item.frame->stride, &properties,
-                  bitmap.ReleaseAndGetAddressOf()))) {
+          if (ID2D1Bitmap1* bitmap = thumbnail_bitmap_for(*item.frame);
+              bitmap != nullptr) {
             d2d_context->DrawBitmap(
-                bitmap.Get(),
+                bitmap,
                 D2D1::RectF(static_cast<float>(item.image_bounds.left),
                             static_cast<float>(item.image_bounds.top),
                             static_cast<float>(item.image_bounds.right),

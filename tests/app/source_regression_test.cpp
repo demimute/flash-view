@@ -80,6 +80,34 @@ TEST(SourceRegressionTest, ThumbnailOverlayIteratesVisibleRangeOnly) {
             std::string::npos);
 }
 
+TEST(SourceRegressionTest, ThumbnailLoadingIsThrottledAndBatched) {
+  const std::string source = read_main_window_source();
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("max_thumbnail_requests_in_flight"), std::string::npos);
+  EXPECT_NE(source.find("cancel_pending_thumbnail_requests()"),
+            std::string::npos);
+  EXPECT_NE(source.find("thumbnail_refresh_timer_id"), std::string::npos);
+  EXPECT_NE(source.find("schedule_thumbnail_refresh()"), std::string::npos);
+  EXPECT_EQ(source.find("InvalidateRect(impl_->window, nullptr, FALSE);\n      }"
+                        "\n      return 0;\n    }\n\n    case WM_MOUSEWHEEL"),
+            std::string::npos);
+}
+
+TEST(SourceRegressionTest, RendererCachesUploadedThumbnailBitmaps) {
+  const std::filesystem::path source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "render" /
+      "d3d_renderer.cpp";
+  std::ifstream stream(source_path);
+  const std::string source((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("thumbnail_bitmaps"), std::string::npos);
+  EXPECT_NE(source.find("thumbnail_bitmap_for"), std::string::npos);
+  EXPECT_NE(source.find("thumbnail_bitmaps.emplace"), std::string::npos);
+}
+
 TEST(SourceRegressionTest, AssociationToolDirectlyAssignsImageExtensions) {
   const std::filesystem::path source_path =
       std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /

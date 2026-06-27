@@ -5,6 +5,8 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <string_view>
 
 #include "viewer/core/result.h"
@@ -38,6 +40,20 @@ TEST(WicDecoderTest, DecodesThumbnailWithinRequestedEdge) {
   EXPECT_LE(result.value().width, 32U);
   EXPECT_LE(result.value().height, 32U);
   EXPECT_EQ(result.value().stride, result.value().width * 4U);
+}
+
+TEST(WicDecoderSourceTest, ThumbnailDecodePrefersShellSystemThumbnails) {
+  const std::filesystem::path source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "platform" /
+      "wic_decoder.cpp";
+  std::ifstream stream(source_path);
+  const std::string source((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("SHCreateItemFromParsingName"), std::string::npos);
+  EXPECT_NE(source.find("IShellItemImageFactory"), std::string::npos);
+  EXPECT_NE(source.find("SIIGBF_THUMBNAILONLY"), std::string::npos);
 }
 
 TEST(WicDecoderTest, DecodesPngToPremultipliedBgra) {

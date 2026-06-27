@@ -3,11 +3,12 @@
 #include <Windows.h>
 #include <objbase.h>
 #include <objidl.h>
+#include <shobjidl_core.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
 #include <utility>
 
 namespace viewer::platform {
@@ -166,6 +167,90 @@ core::Result<core::ImageFrame> decode_scaled_source_frame(
   return decode_source_frame(factory, *scaler.Get(), byte_budget);
 }
 
+core::Result<core::ImageFrame> hbitmap_to_frame(HBITMAP bitmap,
+                                                std::size_t byte_budget) {
+  BITMAP description{};
+  if (GetObjectW(bitmap, sizeof(description), &description) == 0 ||
+      description.bmWidth <= 0 || description.bmHeight <= 0) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"Shell thumbnail bitmap dimensions were invalid.");
+  }
+
+  auto frame = core::ImageFrame::allocate_bgra8(
+      static_cast<std::uint32_t>(description.bmWidth),
+      static_cast<std::uint32_t>(description.bmHeight), byte_budget);
+  if (!frame.has_value()) {
+    return frame;
+  }
+
+  auto& output = frame.value();
+  BITMAPINFO info{};
+  info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = static_cast<LONG>(output.width);
+  info.bmiHeader.biHeight = -static_cast<LONG>(output.height);
+  info.bmiHeader.biPlanes = 1;
+  info.bmiHeader.biBitCount = 32;
+  info.bmiHeader.biCompression = BI_RGB;
+
+  HDC screen = GetDC(nullptr);
+  if (screen == nullptr) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::platform_error,
+        L"Could not read the shell thumbnail bitmap.");
+  }
+
+  const int copied = GetDIBits(
+      screen, bitmap, 0, output.height, output.pixels.data(), &info,
+      DIB_RGB_COLORS);
+  ReleaseDC(nullptr, screen);
+  if (copied == 0) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"Could not copy the shell thumbnail bitmap.");
+  }
+
+  return core::Result<core::ImageFrame>::success(std::move(output));
+}
+
+core::Result<core::ImageFrame> decode_shell_thumbnail(
+    const std::filesystem::path& path,
+    std::uint32_t max_edge,
+    std::size_t byte_budget) {
+  if (max_edge == 0) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::invalid_format,
+        L"Thumbnail dimensions must be non-zero.");
+  }
+
+  ComPtr<IShellItemImageFactory> image_factory;
+  HRESULT result = SHCreateItemFromParsingName(
+      path.c_str(), nullptr, IID_PPV_ARGS(image_factory.GetAddressOf()));
+  if (FAILED(result)) {
+    return failure<core::ImageFrame>(
+        detail::is_io_error(result) ? core::ErrorCode::io_error
+                                    : core::ErrorCode::decode_error,
+        L"Shell could not open the image for thumbnail extraction.");
+  }
+
+  HBITMAP bitmap = nullptr;
+  SIZE size{};
+  size.cx = static_cast<LONG>(max_edge);
+  size.cy = static_cast<LONG>(max_edge);
+  result = image_factory->GetImage(
+      size, static_cast<SIIGBF>(SIIGBF_THUMBNAILONLY | SIIGBF_BIGGERSIZEOK),
+      &bitmap);
+  if (FAILED(result) || bitmap == nullptr) {
+    return failure<core::ImageFrame>(
+        core::ErrorCode::decode_error,
+        L"Shell could not provide a thumbnail.");
+  }
+
+  auto frame = hbitmap_to_frame(bitmap, byte_budget);
+  DeleteObject(bitmap);
+  return frame;
+}
+
 std::uint32_t frame_delay_ms(IWICBitmapFrameDecode& frame) {
   ComPtr<IWICMetadataQueryReader> reader;
   if (FAILED(frame.GetMetadataQueryReader(reader.GetAddressOf()))) {
@@ -258,6 +343,11 @@ core::Result<core::ImageFrame> WicDecoder::decode_thumbnail(
   if (!apartment.usable()) {
     return failure<core::ImageFrame>(
         core::ErrorCode::platform_error, L"COM initialization failed.");
+  }
+
+  auto shell_thumbnail = decode_shell_thumbnail(path, max_edge, byte_budget);
+  if (shell_thumbnail.has_value()) {
+    return shell_thumbnail;
   }
 
   ComPtr<IWICImagingFactory> factory;

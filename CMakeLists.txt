@@ -36,6 +36,7 @@ if(WIN32)
     viewer_core
     windowscodecs
     ole32
+    shell32
   )
 
   add_library(viewer_render STATIC

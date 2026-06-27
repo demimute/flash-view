@@ -56,12 +56,15 @@ constexpr UINT thumbnail_ready_message = WM_APP + 3;
 constexpr UINT_PTR animation_timer_id = 2000;
 constexpr UINT_PTR toolbar_first_id = 3000;
 constexpr UINT_PTR toolbar_hide_timer_id = 2001;
+constexpr UINT_PTR thumbnail_refresh_timer_id = 2002;
 constexpr UINT toolbar_hide_delay_ms = 6000;
+constexpr UINT thumbnail_refresh_delay_ms = 33;
 constexpr std::size_t decode_byte_budget =
     std::size_t{512} * std::size_t{1024} * std::size_t{1024};
 constexpr std::size_t thumbnail_decode_byte_budget =
     std::size_t{16} * std::size_t{1024} * std::size_t{1024};
 constexpr std::size_t max_thumbnail_cache_entries = 768;
+constexpr std::size_t max_thumbnail_requests_in_flight = 32;
 
 std::uint64_t next_instance_token() noexcept {
   static std::atomic_uint64_t next{1};
@@ -238,6 +241,7 @@ struct MainWindow::Impl {
   std::unordered_map<std::wstring, std::shared_ptr<core::ImageFrame>>
       thumbnail_cache;
   std::unordered_set<std::wstring> thumbnail_requests_in_flight;
+  bool thumbnail_refresh_pending = false;
   std::shared_ptr<core::AnimatedImage> current_animation;
   std::size_t current_animation_index = 0;
 
@@ -734,6 +738,7 @@ struct MainWindow::Impl {
         std::clamp(thumbnail_scroll_offset -
                        steps * (std::max)(32, metrics.cell_height / 2),
                    0, metrics.max_scroll);
+    cancel_pending_thumbnail_requests();
     InvalidateRect(window, nullptr, FALSE);
     return true;
   }
@@ -754,6 +759,22 @@ struct MainWindow::Impl {
     }
   }
 
+  void cancel_pending_thumbnail_requests() {
+    if (async_load) {
+      static_cast<void>(async_load->thumbnail_generation.begin());
+    }
+    thumbnail_requests_in_flight.clear();
+  }
+
+  void schedule_thumbnail_refresh() {
+    if (window == nullptr) {
+      return;
+    }
+    thumbnail_refresh_pending = true;
+    SetTimer(window, thumbnail_refresh_timer_id, thumbnail_refresh_delay_ms,
+             nullptr);
+  }
+
   void request_thumbnail(const std::filesystem::path& path,
                          int requested_edge,
                          core::Priority priority) {
@@ -766,6 +787,9 @@ struct MainWindow::Impl {
 
     const std::wstring key = path.wstring();
     if (thumbnail_requests_in_flight.contains(key)) {
+      return;
+    }
+    if (thumbnail_requests_in_flight.size() >= max_thumbnail_requests_in_flight) {
       return;
     }
 
@@ -2443,7 +2467,7 @@ LRESULT MainWindow::handle_message(
             std::move(loaded->result).value());
         impl_->thumbnail_cache[loaded->cache_key] = std::move(frame);
         impl_->trim_thumbnail_cache();
-        InvalidateRect(impl_->window, nullptr, FALSE);
+        impl_->schedule_thumbnail_refresh();
       }
       return 0;
     }
@@ -2602,6 +2626,7 @@ LRESULT MainWindow::handle_message(
       impl_->end_pan();
       impl_->shutdown_async();
       impl_->stop_animation();
+      KillTimer(impl_->window, thumbnail_refresh_timer_id);
       impl_->cleanup_temporary_archives();
       impl_->cleanup_gdi_resources();
       DestroyWindow(impl_->window);
@@ -2616,6 +2641,14 @@ LRESULT MainWindow::handle_message(
         KillTimer(impl_->window, toolbar_hide_timer_id);
         impl_->toolbar_visible = false;
         InvalidateRect(impl_->window, nullptr, FALSE);
+        return 0;
+      }
+      if (wparam == thumbnail_refresh_timer_id) {
+        KillTimer(impl_->window, thumbnail_refresh_timer_id);
+        if (impl_->thumbnail_refresh_pending) {
+          impl_->thumbnail_refresh_pending = false;
+          InvalidateRect(impl_->window, nullptr, FALSE);
+        }
         return 0;
       }
       break;
