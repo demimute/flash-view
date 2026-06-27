@@ -1,9 +1,12 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
+#include <shobjidl_core.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -178,18 +181,29 @@ void delete_value(const std::wstring& subkey, const std::wstring_view name) {
   RegCloseKey(key);
 }
 
+bool same_string_ignore_case(const std::wstring_view left,
+                             const std::wstring_view right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  return CompareStringOrdinal(left.data(), static_cast<int>(left.size()),
+                              right.data(), static_cast<int>(right.size()),
+                              TRUE) == CSTR_EQUAL;
+}
+
+std::wstring explorer_extension_key(const std::wstring_view extension) {
+  return L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
+         std::wstring(extension);
+}
+
 void delete_user_choice(const std::wstring_view extension) {
-  delete_tree(
-      L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
-      std::wstring(extension) + L"\\UserChoice");
+  delete_tree(explorer_extension_key(extension) + L"\\UserChoice");
 }
 
 std::optional<std::wstring> user_choice_prog_id(
     const std::wstring_view extension) {
-  return read_string_value(
-      L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
-          std::wstring(extension) + L"\\UserChoice",
-      L"ProgId");
+  return read_string_value(explorer_extension_key(extension) + L"\\UserChoice",
+                           L"ProgId");
 }
 
 bool extension_default_is_flashview(const std::wstring_view extension) {
@@ -201,8 +215,7 @@ bool extension_default_is_flashview(const std::wstring_view extension) {
 
 void delete_user_choice_if_flashview(const std::wstring_view extension) {
   const std::wstring user_choice_key =
-      L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\" +
-      std::wstring(extension) + L"\\UserChoice";
+      explorer_extension_key(extension) + L"\\UserChoice";
   HKEY key = nullptr;
   if (RegOpenKeyExW(HKEY_CURRENT_USER, user_choice_key.c_str(), 0,
                     KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) {
@@ -222,6 +235,65 @@ void delete_user_choice_if_flashview(const std::wstring_view extension) {
   if (is_flashview) {
     delete_tree(user_choice_key);
   }
+}
+
+void delete_explorer_open_with_list_entries(
+    const std::wstring_view extension) {
+  const std::wstring open_with_list_key =
+      explorer_extension_key(extension) + L"\\OpenWithList";
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, open_with_list_key.c_str(), 0,
+                    KEY_QUERY_VALUE | KEY_SET_VALUE,
+                    &key) != ERROR_SUCCESS) {
+    return;
+  }
+
+  std::vector<std::wstring> value_names_to_delete;
+  std::wstring mru_list;
+  DWORD index = 0;
+  while (true) {
+    wchar_t value_name[256]{};
+    DWORD value_name_size = static_cast<DWORD>(std::size(value_name));
+    wchar_t data[512]{};
+    DWORD data_size = sizeof(data);
+    DWORD type = 0;
+    const LONG result =
+        RegEnumValueW(key, index, value_name, &value_name_size, nullptr, &type,
+                      reinterpret_cast<BYTE*>(data), &data_size);
+    if (result == ERROR_NO_MORE_ITEMS) {
+      break;
+    }
+    ++index;
+    if (result != ERROR_SUCCESS) {
+      continue;
+    }
+
+    const std::wstring_view name(value_name, value_name_size);
+    if (type == REG_SZ && name == L"MRUList") {
+      mru_list = data;
+      continue;
+    }
+    if (type == REG_SZ && same_string_ignore_case(data, viewer_exe_name)) {
+      value_names_to_delete.emplace_back(name);
+    }
+  }
+
+  for (const auto& value_name : value_names_to_delete) {
+    RegDeleteValueW(key, value_name.c_str());
+  }
+
+  if (!mru_list.empty() && !value_names_to_delete.empty()) {
+    for (const auto& value_name : value_names_to_delete) {
+      if (value_name.size() == 1) {
+        mru_list.erase(std::remove(mru_list.begin(), mru_list.end(),
+                                   value_name.front()),
+                       mru_list.end());
+      }
+    }
+    set_string_value(key, L"MRUList", mru_list);
+  }
+
+  RegCloseKey(key);
 }
 
 void clear_extension_default_if_flashview(const std::wstring& extension_key) {
@@ -249,6 +321,41 @@ struct AssociationResult {
   std::vector<std::wstring> blocked_extensions;
 };
 
+bool set_default_with_windows(IApplicationAssociationRegistration* registration,
+                              const std::wstring_view extension) {
+  if (registration == nullptr) {
+    return false;
+  }
+  return SUCCEEDED(registration->SetAppAsDefault(
+      std::wstring(app_name).c_str(), std::wstring(extension).c_str(),
+      AT_FILEEXTENSION));
+}
+
+std::optional<bool> effective_default_is_flashview(
+    IApplicationAssociationRegistration* registration,
+    const std::wstring_view extension) {
+  if (registration == nullptr) {
+    return std::nullopt;
+  }
+
+  LPWSTR current_default = nullptr;
+  const HRESULT result = registration->QueryCurrentDefault(
+      std::wstring(extension).c_str(), AT_FILEEXTENSION, AL_EFFECTIVE,
+      &current_default);
+  if (FAILED(result) || current_default == nullptr) {
+    return std::nullopt;
+  }
+
+  const std::wstring_view effective_default(current_default);
+  const bool is_flashview =
+      same_string_ignore_case(effective_default, prog_id) ||
+      same_string_ignore_case(
+          effective_default,
+          L"Applications\\" + std::wstring(viewer_exe_name));
+  CoTaskMemFree(current_default);
+  return is_flashview;
+}
+
 AssociationResult register_associations(
     const std::filesystem::path& viewer_path) {
   const std::wstring exe = viewer_path.wstring();
@@ -263,6 +370,16 @@ AssociationResult register_associations(
   const std::wstring app_paths_key =
       L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
       std::wstring(viewer_exe_name);
+
+  const HRESULT com_init =
+      CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool should_uninitialize_com = SUCCEEDED(com_init);
+  IApplicationAssociationRegistration* registration = nullptr;
+  if (SUCCEEDED(com_init) || com_init == RPC_E_CHANGED_MODE) {
+    CoCreateInstance(CLSID_ApplicationAssociationRegistration, nullptr,
+                     CLSCTX_INPROC_SERVER,
+                     IID_PPV_ARGS(&registration));
+  }
 
   AssociationResult result;
   bool ok = true;
@@ -298,17 +415,32 @@ AssociationResult register_associations(
                             L"");
     ok &= write_empty_binary_value(extension_key + L"\\OpenWithProgids",
                                    prog_id);
+    ok &= write_empty_binary_value(explorer_extension_key(extension) +
+                                       L"\\OpenWithProgids",
+                                   prog_id);
     ok &= write_key_value(capabilities_key + L"\\FileAssociations",
                           extension_string.c_str(), std::wstring(prog_id));
     ok &= write_key_value(application_key + L"\\SupportedTypes",
                           extension_string.c_str(), L"");
 
+    set_default_with_windows(registration, extension);
+    const std::optional<bool> effective_default =
+        effective_default_is_flashview(registration, extension);
     const auto user_choice = user_choice_prog_id(extension);
-    if ((user_choice.has_value() && *user_choice != prog_id) ||
-        (!user_choice.has_value() &&
-         !extension_default_is_flashview(extension))) {
+    if ((effective_default.has_value() && !*effective_default) ||
+        (!effective_default.has_value() &&
+         ((user_choice.has_value() && *user_choice != prog_id) ||
+          (!user_choice.has_value() &&
+           !extension_default_is_flashview(extension))))) {
       result.blocked_extensions.push_back(extension_string);
     }
+  }
+
+  if (registration != nullptr) {
+    registration->Release();
+  }
+  if (should_uninitialize_com) {
+    CoUninitialize();
   }
 
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -331,6 +463,15 @@ void unregister_associations() {
     delete_tree(extension_key + L"\\OpenWithList\\" +
                 std::wstring(viewer_exe_name));
     delete_value(extension_key + L"\\OpenWithProgids", prog_id);
+    delete_explorer_open_with_list_entries(extension);
+    delete_value(explorer_extension_key(extension) + L"\\OpenWithProgids", prog_id);
+    delete_value(
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\ApplicationAssociationToasts",
+        std::wstring(prog_id) + L"_" + extension_string);
+    delete_value(
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\ApplicationAssociationToasts",
+        L"Applications\\" + std::wstring(viewer_exe_name) + L"_" +
+            extension_string);
   }
 
   delete_tree(classes + std::wstring(prog_id));
@@ -348,14 +489,13 @@ void show_message(const std::wstring& text, UINT icon = MB_ICONINFORMATION) {
 
 std::wstring blocked_extension_message(const AssociationResult& result) {
   std::wstringstream message;
-  message << L"FlashView has been registered.\n\n";
-  message << L"Windows did not allow direct default takeover for:\n";
+  message << L"FlashView was added to Open with, but Windows did not allow "
+             L"direct double-click takeover for:\n";
   for (const auto& extension : result.blocked_extensions) {
     message << L"  " << extension << L"\n";
   }
   message << L"\nThis is Windows 10/11 default-app protection. "
-             L"FlashView was still added to Open with and the image right-click "
-             L"menu.\n\n";
+             L"The image right-click menu was still added.\n\n";
   message << L"For double-click default opening, choose FlashView once in "
              L"Windows Settings > Apps > Default apps.";
   return message.str();

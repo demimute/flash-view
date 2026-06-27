@@ -108,6 +108,7 @@ if(WIN32)
     viewer_enable_warnings(${association_tool})
     target_link_libraries(${association_tool} PRIVATE
       advapi32
+      ole32
       shell32
     )
   endforeach()

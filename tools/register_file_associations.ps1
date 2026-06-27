@@ -83,6 +83,17 @@ foreach ($extension in $extensions) {
     -PropertyType Binary `
     -Value ([byte[]]@()) |
     Out-Null
+
+  New-Item -Force `
+    -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\OpenWithProgids" |
+    Out-Null
+  New-ItemProperty `
+    -Force `
+    -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\$extension\OpenWithProgids" `
+    -Name $progId `
+    -PropertyType Binary `
+    -Value ([byte[]]@()) |
+    Out-Null
 }
 
 Write-Host "Associated FlashView with: $($extensions -join ', ')"

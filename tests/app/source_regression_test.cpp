@@ -139,6 +139,37 @@ TEST(SourceRegressionTest, AssociationToolDetectsWindowsDefaultAppBlocking) {
             std::string::npos);
 }
 
+TEST(SourceRegressionTest, AssociationToolChecksEffectiveWindowsDefault) {
+  const std::filesystem::path source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /
+      "file_association.cpp";
+  std::ifstream stream(source_path);
+  const std::string source((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("SetAppAsDefault"), std::string::npos);
+  EXPECT_NE(source.find("QueryCurrentDefault"), std::string::npos);
+  EXPECT_NE(source.find("AL_EFFECTIVE"), std::string::npos);
+}
+
+TEST(SourceRegressionTest, AssociationUninstallRemovesExplorerOpenWithEntries) {
+  const std::filesystem::path source_path =
+      std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /
+      "file_association.cpp";
+  std::ifstream stream(source_path);
+  const std::string source((std::istreambuf_iterator<char>(stream)),
+                           std::istreambuf_iterator<char>());
+  ASSERT_FALSE(source.empty());
+
+  EXPECT_NE(source.find("Explorer\\\\FileExts\\\\"), std::string::npos);
+  EXPECT_NE(source.find("delete_explorer_open_with_list_entries"),
+            std::string::npos);
+  EXPECT_NE(source.find("delete_value(explorer_extension_key(extension) + "
+                        "L\"\\\\OpenWithProgids\", prog_id)"),
+            std::string::npos);
+}
+
 TEST(SourceRegressionTest, PublicExecutableNameIsFlashView) {
   const std::filesystem::path tool_source_path =
       std::filesystem::path{PROJECT_SOURCE_DIR} / "src" / "tools" /
